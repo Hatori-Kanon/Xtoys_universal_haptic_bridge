@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>XtoysProbeDominatePlan</AssemblyName>
+    <RootNamespace>DominatePlanProbe.BepInEx</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\DominatePlanBridge.BepInEx\Hooks\ProbeHooks.cs" Link="Hooks\ProbeHooks.cs" />
+    <Compile Include="..\DominatePlanBridge.BepInEx\Hooks\ProbeSnapshot.cs" Link="Hooks\ProbeSnapshot.cs" />
+    <Compile Include="..\DominatePlanBridge.Core\ProbeNameFilter.cs" Link="Core\ProbeNameFilter.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>..\..\ドミネートプラン\BepInEx\core\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>..\..\ドミネートプラン\BepInEx\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>..\..\ドミネートプラン\ドミネートプラン_Data\Managed\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>..\..\ドミネートプラン\ドミネートプラン_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>..\..\ドミネートプラン\ドミネートプラン_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>..\..\ドミネートプラン\ドミネートプラン_Data\Managed\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,46 @@
+# This workspace also contains complete game installations and local research
+# artifacts. Ignore every root entry by default, then allow only the repository
+# source, tests, documentation, and metadata.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/src/
+!/tests/
+!/docs/
+
+# Build output and IDE state
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/.vscode/
+**/*.user
+**/*.suo
+
+# Runtime output, captures, and local configuration
+**/logs/
+**/*.log
+**/payloads/*
+!**/payloads/.keep
+**/*.local.*
+**/.env
+**/.env.*
+!**/.env.example
+
+# Archives and compiled artifacts
+**/*.zip
+**/*.7z
+**/*.rar
+**/*.exe
+**/*.dll
+**/*.pdb
+**/*.cache
+
+# Temporary files
+**/.tmp/
+**/tmp/
+**/*.tmp
+**/*.bak
+**/*~
+
