@@ -31,3 +31,12 @@ test('Chinese manual cites the required official XToys sources and separates pro
   assert.match(manual, /XTHB 项目约定/);
   assert.match(manual, /当前界面核对/);
 });
+
+test('Chinese manual separates protocol preview from low-output per-slot hardware testing', function () {
+  var manual = readManual();
+
+  assert.match(manual, /协议 `test` 只预览、不驱动物理输出/);
+  assert.match(manual, /`xtoysBridgeTestSlot\(slotId, value\)` 才会产生真实硬件输出/);
+  assert.match(manual, /低值且一次一槽逐步上调/);
+  assert.match(manual, /不能用协议 `test` 替代硬件验收/);
+});
