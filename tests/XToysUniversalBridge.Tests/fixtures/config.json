@@ -2,16 +2,16 @@
   "logLevel": "errors",
   "globalMultiplier": 1,
   "groups": {
-    "genitals": {},
-    "lower_body": {},
-    "double_hole": {},
-    "whole_body": {},
-    "mixed": {}
+    "genitals": { "clitoris": 0.5, "vulva": 0.8, "vagina": 0.6, "penis": 0.7, "prostate": 0.7 },
+    "lower_body": { "vulva": 0.7, "vagina": 0.8, "anus": 0.6, "butt": 0.5, "penis": 0.6, "prostate": 0.6 },
+    "double_hole": { "vagina": 0.9, "anus": 0.9 },
+    "whole_body": { "mouth": 0.4, "breast": 0.5, "clitoris": 0.7, "vagina": 0.7, "anus": 0.5, "penis": 0.7 },
+    "mixed": { "nipple": 0.5, "armpit": 0.4, "vulva": 0.6, "butt": 0.5, "prostate": 0.6 }
   },
   "slots": [
-    { "id": 1, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
-    { "id": 2, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
-    { "id": 3, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 1, "enabled": true, "type": "intensity", "frequencyEnabled": true, "routes": { "clitoris": 0.5, "vagina": 0.8 } },
+    { "id": 2, "enabled": true, "type": "intensity", "frequencyEnabled": false, "routes": { "clitoris": 0.25, "vulva": 0.5 } },
+    { "id": 3, "enabled": true, "type": "rotation", "frequencyEnabled": false, "routes": { "clitoris": 0.5, "vagina": 0.5 } },
     { "id": 4, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
     { "id": 5, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
     { "id": 6, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },

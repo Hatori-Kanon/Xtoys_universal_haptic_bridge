@@ -59,8 +59,8 @@ test('validates and copies a complete sixteen-slot configuration', function () {
   assert.equal(result.ok, true);
   assert.notEqual(result.config, config);
   assert.notEqual(result.config.slots, config.slots);
-  config.slots[0].enabled = true;
-  assert.equal(result.config.slots[0].enabled, false);
+  config.slots[0].enabled = false;
+  assert.equal(result.config.slots[0].enabled, true);
 });
 
 test('rejects malformed configurations before any message parsing', function () {
