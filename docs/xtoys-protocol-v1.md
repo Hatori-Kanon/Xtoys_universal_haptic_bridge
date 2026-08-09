@@ -29,7 +29,7 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 
 `source + eventId` 是有限事件的身份：不同 `source` 可以使用相同的 `eventId` 而互不影响。对同一身份，`play` 或 `update` 只有严格大于当前 `sequence` 才会替换整个事件；重复或较小序号会被忽略。接受时间以 XToys 接受消息的时刻为准，有限事件在 `acceptedAt + durationMs` 到期。
 
-基线按 `source` 单独保存。一个较新的 `set_baseline` 用该 `source` 的**完整快照**替换旧快照，遗漏的部位会被清除；其 `sequence` 也必须严格递增。`stop` 只操作同一 `source` 的事件。`stop_all` 不按 `source` 区分，会清除全部来源的基线和有限事件。
+基线按 `source` 单独保存。一个较新的 `set_baseline` 用该 `source` 的**完整快照**替换旧快照，遗漏的部位会被清除；其 `sequence` 也必须严格递增。`stop` 只操作同一 `source` 的事件。`stop_all` 不按 `source` 区分，会清除全部来源的当前基线和有限事件，但会**保留**每个 `source` 已接受的基线 `sequence` 栅栏。因此，`stop_all` 之后同一 `source` 的下一条 `set_baseline` 仍必须使用大于停机前已接受序号的 `sequence`。重启后的 Bridge 必须持久化并递增该序号，或者改用新的 `source` 身份。
 
 ## `targets` 中的全部字段
 
@@ -115,7 +115,7 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 
 ### `stop_all`
 
-立即清除所有来源的基线和有限事件，并以零渐变将每个已启用槽写为零。它优先于普通仲裁。
+立即清除所有来源的当前基线和有限事件，并以零渐变将每个已启用槽写为零。它优先于普通仲裁，但不清除每个来源已接受的基线 `sequence` 栅栏；发送方恢复基线时必须继续递增该来源的序号。
 
 ```json
 {
@@ -149,6 +149,6 @@ XToys 先将虚拟组权重、叶子到槽的路由权重和 `globalMultiplier` 
 - 一条消息最多 32 个 `targets`、最多 32 个 `states` 标签。
 - 有限事件时长及每个渐变/脉冲时间字段最大 600000 ms。
 - 无效 JSON、未知命令/部位/组、缺失必填字段、无效数值或方向会被拒绝，且不会修改当前输出状态。
-- 仅有 `stop_all` 的版本、命令和非空 `source` 会先被接受，以便始终可以请求全停。
+- `stop_all` 仍会验证外层 `payload` 长度、JSON 对象、`protocolVersion`、支持的 `command` 和非空 `source`。若提供 `states`，它仍必须是最多 32 个字符串的数组。只有 `targets` 及 XToys 配置验证会被绕过，以便在配置无效或 targets 损坏时仍可请求全停。
 
 XToys 模板配置与 Webhook/Job 接线请见 [一次性 XToys 模板配置](xtoys-template-setup.md)。
