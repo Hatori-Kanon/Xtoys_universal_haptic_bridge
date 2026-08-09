@@ -31,7 +31,10 @@ try {
 
     $sourceText = @(
       $sourceFiles | ForEach-Object {
-        [System.IO.File]::ReadAllText($_.FullName, $utf8NoBom).TrimEnd("`r", "`n")
+        [System.IO.File]::ReadAllText($_.FullName, $utf8NoBom).
+          Replace("`r`n", "`n").
+          Replace("`r", "`n").
+          TrimEnd("`n")
       }
     ) -join "`n"
 

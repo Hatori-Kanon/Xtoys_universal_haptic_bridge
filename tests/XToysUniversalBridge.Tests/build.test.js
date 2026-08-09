@@ -59,6 +59,47 @@ test('build emits one ES5 runtime in module order', function () {
   assert.doesNotMatch(output, /\b(let|const|class|async|await)\b|=>/);
 });
 
+test('build emits LF-only output when runtime sources use CRLF line endings', function () {
+  var temporaryRoot = fs.mkdtempSync(path.join(repositoryRoot, '.xtoys-runtime-line-endings-'));
+  var temporaryScriptDirectory = path.join(temporaryRoot, 'scripts');
+  var temporarySourceDirectory = path.join(temporaryRoot, 'src', 'XToysUniversalBridge');
+  var temporaryDistributionFile = path.join(temporaryRoot, 'dist', 'xtoys-universal-runtime.es5.js');
+  var sourceNames = fs.readdirSync(path.dirname(globalEntryFile)).filter(function (name) {
+    return /\.es5\.js$/.test(name);
+  }).sort();
+  var expected = sourceNames.map(function (name) {
+    return fs.readFileSync(path.join(path.dirname(globalEntryFile), name), 'utf8')
+      .replace(/\r\n?|\n/g, '\n')
+      .replace(/\n+$/, '');
+  }).join('\n') + '\n';
+
+  try {
+    fs.mkdirSync(temporaryScriptDirectory, { recursive: true });
+    fs.mkdirSync(temporarySourceDirectory, { recursive: true });
+    fs.copyFileSync(buildScript, path.join(temporaryScriptDirectory, 'Build-XToysRuntime.ps1'));
+    sourceNames.forEach(function (name) {
+      var source = fs.readFileSync(path.join(path.dirname(globalEntryFile), name), 'utf8');
+      fs.writeFileSync(
+        path.join(temporarySourceDirectory, name),
+        source.replace(/\r\n?|\n/g, '\r\n'),
+        'utf8'
+      );
+    });
+
+    childProcess.execFileSync(
+      'powershell',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(temporaryScriptDirectory, 'Build-XToysRuntime.ps1')],
+      { cwd: temporaryRoot, encoding: 'utf8' }
+    );
+
+    var output = fs.readFileSync(temporaryDistributionFile, 'utf8');
+    assert.doesNotMatch(output, /\r/);
+    assert.equal(output, expected);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test('build script serializes publishers and atomically replaces from a unique temporary file', function () {
   var script = fs.readFileSync(buildScript, 'utf8');
   assert.match(script, /System\.Threading\.Mutex/);

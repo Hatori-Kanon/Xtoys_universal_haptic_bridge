@@ -14,7 +14,10 @@ function expectedDistribution() {
     return /\.es5\.js$/.test(name) && fs.statSync(path.join(sourceDirectory, name)).isFile();
   }).sort();
   return names.map(function (name) {
-    return fs.readFileSync(path.join(sourceDirectory, name), 'utf8').replace(/[\r\n]+$/, '');
+    return fs.readFileSync(path.join(sourceDirectory, name), 'utf8')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\n+$/, '');
   }).join('\n') + '\n';
 }
 
