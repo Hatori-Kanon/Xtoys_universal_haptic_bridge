@@ -1,0 +1,29 @@
+{
+  "logLevel": "errors",
+  "globalMultiplier": 1,
+  "groups": {
+    "genitals": {},
+    "lower_body": {},
+    "double_hole": {},
+    "whole_body": {},
+    "mixed": {}
+  },
+  "slots": [
+    { "id": 1, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 2, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 3, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 4, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 5, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 6, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 7, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 8, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 9, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 10, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 11, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 12, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 13, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 14, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 15, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 16, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} }
+  ]
+}

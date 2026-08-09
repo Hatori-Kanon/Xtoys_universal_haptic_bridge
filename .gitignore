@@ -8,6 +8,8 @@
 !/src/
 !/tests/
 !/docs/
+!/scripts/
+!/dist/
 
 # Build output and IDE state
 **/bin/
