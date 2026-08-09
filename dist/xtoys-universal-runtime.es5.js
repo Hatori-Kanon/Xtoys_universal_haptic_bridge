@@ -6,6 +6,12 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
   ns.MAX_PAYLOAD_LENGTH = 32768;
   ns.MAX_TARGETS = 32;
   ns.MAX_STATES = 32;
+  ns.MAX_IDENTIFIER_LENGTH = 128;
+  ns.MAX_STATE_LABEL_LENGTH = 128;
+  ns.MAX_ACTIVE_EVENTS = 128;
+  ns.MAX_ACTIVE_EVENT_TARGETS = 256;
+  ns.MAX_BASELINE_SOURCES = 64;
+  ns.MAX_BASELINE_TARGETS = 256;
   ns.MAX_TIME_MS = 600000;
   ns.clamp = function (value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -401,6 +407,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     if (typeof payload.source !== 'string' || isBlankString(payload.source)) {
       return fail('missing_source', 'Source is required.');
     }
+    if (payload.command !== 'stop_all' && payload.source.length > ns.MAX_IDENTIFIER_LENGTH) {
+      return fail('identifier_too_long', 'Source exceeds the maximum length.');
+    }
     if (payload.states !== undefined) {
       if (!Array.isArray(payload.states)) {
         return fail('invalid_states', 'States must be an array.');
@@ -412,6 +421,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       for (index = 0; index < payload.states.length; index += 1) {
         if (typeof payload.states[index] !== 'string') {
           return fail('invalid_states', 'State labels must be strings.');
+        }
+        if (payload.command !== 'stop_all' && payload.states[index].length > ns.MAX_STATE_LABEL_LENGTH) {
+          return fail('state_label_too_long', 'State label exceeds the maximum length.');
         }
         states.push(payload.states[index]);
       }
@@ -437,6 +449,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     if (payload.command === 'play' || payload.command === 'update') {
       if (typeof payload.eventId !== 'string' || isBlankString(payload.eventId)) {
         return fail('missing_event_id', 'A non-empty event ID is required.');
+      }
+      if (payload.eventId.length > ns.MAX_IDENTIFIER_LENGTH) {
+        return fail('identifier_too_long', 'Event ID exceeds the maximum length.');
       }
       sequence = normalizedSequence(payload.sequence);
       if (!sequence.ok) {
@@ -468,6 +483,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       if (payload.eventId !== undefined && payload.eventId !== null) {
         if (typeof payload.eventId !== 'string' || isBlankString(payload.eventId)) {
           return fail('missing_event_id', 'Event ID must be non-empty when supplied.');
+        }
+        if (payload.eventId.length > ns.MAX_IDENTIFIER_LENGTH) {
+          return fail('identifier_too_long', 'Event ID exceeds the maximum length.');
         }
         message.eventId = payload.eventId;
       }
@@ -577,7 +595,21 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         changed: changed,
         changedParts: parts,
         snapshot: snapshot(nextBaseline, nextEvents, nextGeneration),
-        ignoredReason: ignoredReason || null
+        ignoredReason: ignoredReason || null,
+        rejected: null
+      };
+    }
+
+    function capacityResult(detail) {
+      return {
+        changed: false,
+        changedParts: [],
+        snapshot: snapshot(baseline, events, generation),
+        ignoredReason: null,
+        rejected: {
+          code: 'state_capacity_exceeded',
+          detail: detail
+        }
       };
     }
 
@@ -608,10 +640,48 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       return entries;
     }
 
+    function activeEventCounts(candidateEvents, nowMs) {
+      var key;
+      var entries;
+      var index;
+      var activeTargets;
+      var eventCount = 0;
+      var targetCount = 0;
+      for (key in candidateEvents) {
+        if (hasOwn.call(candidateEvents, key)) {
+          entries = candidateEvents[key];
+          activeTargets = 0;
+          for (index = 0; index < entries.length; index += 1) {
+            if (entries[index].expiresAt > nowMs) {
+              activeTargets += 1;
+            }
+          }
+          if (activeTargets > 0) {
+            eventCount += 1;
+            targetCount += activeTargets;
+          }
+        }
+      }
+      return { events: eventCount, targets: targetCount };
+    }
+
+    function ownKeyCount(value) {
+      var key;
+      var count = 0;
+      for (key in value) {
+        if (hasOwn.call(value, key)) {
+          count += 1;
+        }
+      }
+      return count;
+    }
+
     function applyEvent(message, nowMs, dryRun) {
       var key = eventKey(message.source, message.eventId);
       var current = events[key];
       var nextEvents;
+      var nextEntries;
+      var counts;
       var parts = [];
       var nextGeneration;
 
@@ -627,8 +697,16 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       if (hasOwn.call(nextEvents, key)) {
         addEntryParts(parts, nextEvents[key]);
       }
-      addEntryParts(parts, completeEvent(message, nowMs, nextGeneration));
-      nextEvents[key] = completeEvent(message, nowMs, nextGeneration);
+      nextEntries = completeEvent(message, nowMs, nextGeneration);
+      addEntryParts(parts, nextEntries);
+      nextEvents[key] = nextEntries;
+      counts = activeEventCounts(nextEvents, nowMs);
+      if (counts.events > ns.MAX_ACTIVE_EVENTS) {
+        return capacityResult('Active event identity limit exceeded.');
+      }
+      if (counts.targets > ns.MAX_ACTIVE_EVENT_TARGETS) {
+        return capacityResult('Active event target limit exceeded.');
+      }
       if (!dryRun) {
         publish(baseline, nextEvents, baselineSequences, nextGeneration);
       }
@@ -737,6 +815,12 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         changed = true;
       }
       nextSequences[sequenceKey] = message.sequence;
+      if (ownKeyCount(nextSequences) > ns.MAX_BASELINE_SOURCES) {
+        return capacityResult('Baseline source limit exceeded.');
+      }
+      if (ownKeyCount(nextBaseline) > ns.MAX_BASELINE_TARGETS) {
+        return capacityResult('Baseline target limit exceeded.');
+      }
       nextGeneration = changed ? generation + 1 : generation;
       if (!dryRun) {
         publish(nextBaseline, events, nextSequences, nextGeneration);
@@ -1322,6 +1406,13 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         };
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
+      if (applied.rejected !== null) {
+        return {
+          ok: false,
+          code: applied.rejected.code,
+          detail: applied.rejected.detail
+        };
+      }
       expired = engine.expire(atMs, false);
       if (applied.ignoredReason === 'absent_event' && !expired.changed) {
         return {

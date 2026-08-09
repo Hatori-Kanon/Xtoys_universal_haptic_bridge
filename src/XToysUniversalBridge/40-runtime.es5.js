@@ -217,6 +217,13 @@
         };
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
+      if (applied.rejected !== null) {
+        return {
+          ok: false,
+          code: applied.rejected.code,
+          detail: applied.rejected.detail
+        };
+      }
       expired = engine.expire(atMs, false);
       if (applied.ignoredReason === 'absent_event' && !expired.changed) {
         return {

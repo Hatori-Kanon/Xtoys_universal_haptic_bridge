@@ -68,7 +68,21 @@
         changed: changed,
         changedParts: parts,
         snapshot: snapshot(nextBaseline, nextEvents, nextGeneration),
-        ignoredReason: ignoredReason || null
+        ignoredReason: ignoredReason || null,
+        rejected: null
+      };
+    }
+
+    function capacityResult(detail) {
+      return {
+        changed: false,
+        changedParts: [],
+        snapshot: snapshot(baseline, events, generation),
+        ignoredReason: null,
+        rejected: {
+          code: 'state_capacity_exceeded',
+          detail: detail
+        }
       };
     }
 
@@ -99,10 +113,48 @@
       return entries;
     }
 
+    function activeEventCounts(candidateEvents, nowMs) {
+      var key;
+      var entries;
+      var index;
+      var activeTargets;
+      var eventCount = 0;
+      var targetCount = 0;
+      for (key in candidateEvents) {
+        if (hasOwn.call(candidateEvents, key)) {
+          entries = candidateEvents[key];
+          activeTargets = 0;
+          for (index = 0; index < entries.length; index += 1) {
+            if (entries[index].expiresAt > nowMs) {
+              activeTargets += 1;
+            }
+          }
+          if (activeTargets > 0) {
+            eventCount += 1;
+            targetCount += activeTargets;
+          }
+        }
+      }
+      return { events: eventCount, targets: targetCount };
+    }
+
+    function ownKeyCount(value) {
+      var key;
+      var count = 0;
+      for (key in value) {
+        if (hasOwn.call(value, key)) {
+          count += 1;
+        }
+      }
+      return count;
+    }
+
     function applyEvent(message, nowMs, dryRun) {
       var key = eventKey(message.source, message.eventId);
       var current = events[key];
       var nextEvents;
+      var nextEntries;
+      var counts;
       var parts = [];
       var nextGeneration;
 
@@ -118,8 +170,16 @@
       if (hasOwn.call(nextEvents, key)) {
         addEntryParts(parts, nextEvents[key]);
       }
-      addEntryParts(parts, completeEvent(message, nowMs, nextGeneration));
-      nextEvents[key] = completeEvent(message, nowMs, nextGeneration);
+      nextEntries = completeEvent(message, nowMs, nextGeneration);
+      addEntryParts(parts, nextEntries);
+      nextEvents[key] = nextEntries;
+      counts = activeEventCounts(nextEvents, nowMs);
+      if (counts.events > ns.MAX_ACTIVE_EVENTS) {
+        return capacityResult('Active event identity limit exceeded.');
+      }
+      if (counts.targets > ns.MAX_ACTIVE_EVENT_TARGETS) {
+        return capacityResult('Active event target limit exceeded.');
+      }
       if (!dryRun) {
         publish(baseline, nextEvents, baselineSequences, nextGeneration);
       }
@@ -228,6 +288,12 @@
         changed = true;
       }
       nextSequences[sequenceKey] = message.sequence;
+      if (ownKeyCount(nextSequences) > ns.MAX_BASELINE_SOURCES) {
+        return capacityResult('Baseline source limit exceeded.');
+      }
+      if (ownKeyCount(nextBaseline) > ns.MAX_BASELINE_TARGETS) {
+        return capacityResult('Baseline target limit exceeded.');
+      }
       nextGeneration = changed ? generation + 1 : generation;
       if (!dryRun) {
         publish(nextBaseline, events, nextSequences, nextGeneration);

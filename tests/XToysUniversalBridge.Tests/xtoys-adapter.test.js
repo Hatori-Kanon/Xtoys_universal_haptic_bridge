@@ -712,3 +712,34 @@ test('adapter logs errors immediately unless logging is off and contains console
     errorsAdapter.log({ type: 'dispatch_error', detail: 'contained' });
   });
 });
+
+test('public handle rejects excess retained state without output and still accepts stop all', function () {
+  var loaded = loadRuntime({
+    now: 0,
+    variables: { 'xthb-config-json': JSON.stringify(fixtureConfig()) }
+  });
+  var variablesBefore;
+  var actionsBefore;
+  var index;
+
+  assert.equal(loaded.context.xtoysBridgeInit(), 1);
+  for (index = 0; index < 128; index += 1) {
+    assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+      eventId: 'capacity-' + index,
+      sequence: 1,
+      targets: [{ part: 'clitoris', intensity: 40, durationMs: 600000 }]
+    })), 1);
+  }
+  loaded.actions.length = 0;
+  variablesBefore = plain(loaded.variables);
+  actionsBefore = plain(loaded.actions);
+
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'capacity-128',
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 40, durationMs: 600000 }]
+  })), 0);
+  assert.deepEqual(plain(loaded.variables), variablesBefore);
+  assert.deepEqual(plain(loaded.actions), actionsBefore);
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('stop_all')), 1);
+});

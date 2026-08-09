@@ -881,3 +881,34 @@ test('built public handler processes 500 timed update commands with deterministi
     assert.equal(entry, 'XTHB debug: 100 successful slot updates.');
   });
 });
+
+test('runtime reports retained-state capacity rejection before expiry or dispatch', function () {
+  var subject = createSubject(0);
+  var before;
+  var rejected;
+  var stopped;
+  var index;
+
+  for (index = 0; index < 128; index += 1) {
+    assert.equal(subject.runtime.handle(payload('play', {
+      eventId: 'capacity-' + index,
+      sequence: 1,
+      targets: [target('clitoris', { intensity: 40, durationMs: 600000 })]
+    })).ok, true);
+  }
+  before = subject.runtime.snapshot();
+  subject.calls.length = 0;
+  rejected = subject.runtime.handle(payload('play', {
+    eventId: 'capacity-128',
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 40, durationMs: 600000 })]
+  }));
+
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'state_capacity_exceeded');
+  assert.deepEqual(copy(subject.runtime.snapshot()), copy(before));
+  assert.deepEqual(subject.calls, []);
+
+  stopped = subject.runtime.handle(payload('stop_all'));
+  assert.equal(stopped.ok, true);
+});
