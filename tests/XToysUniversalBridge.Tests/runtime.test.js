@@ -912,3 +912,45 @@ test('runtime reports retained-state capacity rejection before expiry or dispatc
   stopped = subject.runtime.handle(payload('stop_all'));
   assert.equal(stopped.ok, true);
 });
+
+test('unchanged handle and tick paths avoid deep-copying logical state', function () {
+  var subject = createSubject(0);
+  var originalCopy = subject.loaded.XTHB.copyObject;
+  var stateCopies = 0;
+  var before;
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'long-lived',
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 40, durationMs: 1000 })]
+  }));
+  before = copy(subject.runtime.snapshot());
+  subject.calls.length = 0;
+  subject.loaded.XTHB.copyObject = function (value) {
+    var keys;
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      keys = Object.keys(value);
+      if (keys.length > 0 && Array.isArray(value[keys[0]]) &&
+          value[keys[0]].length > 0 && value[keys[0]][0].target !== undefined) {
+        stateCopies += 1;
+      }
+    }
+    return originalCopy(value);
+  };
+
+  subject.runtime.handle(payload('update', {
+    eventId: 'long-lived',
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 80, durationMs: 1000 })]
+  }));
+  assert.equal(stateCopies, 0);
+  assert.deepEqual(subject.calls, []);
+
+  stateCopies = 0;
+  subject.runtime.tick();
+  assert.equal(stateCopies, 0);
+  assert.deepEqual(subject.calls, []);
+
+  subject.loaded.XTHB.copyObject = originalCopy;
+  assert.deepEqual(copy(subject.runtime.snapshot()), before);
+});

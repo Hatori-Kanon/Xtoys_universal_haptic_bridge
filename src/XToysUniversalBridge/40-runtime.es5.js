@@ -157,7 +157,7 @@
     }
 
     function dispatch(atMs, expiredParts) {
-      var slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
+      var slots = ns.computeSlots(engine.readState(), normalizedConfig, atMs);
       var index;
       var slot;
       var transition;

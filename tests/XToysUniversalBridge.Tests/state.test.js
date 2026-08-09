@@ -492,3 +492,73 @@ test('bounds total baseline targets and rejects replacement atomically', functio
   assert.equal(rejected.rejected.code, 'state_capacity_exceeded');
   assert.deepEqual(plain(engine.snapshot()), plain(before));
 });
+
+test('copy-on-write updates only the changed event path and owns accepted targets', function () {
+  var engine = buildAndCreateEngine();
+  var firstMessage = message('play', {
+    eventId: 'first', sequence: 1, targets: [target('vagina')]
+  });
+  var firstKey = eventKey('bridge-a', 'first');
+  var secondKey = eventKey('bridge-a', 'second');
+  var before;
+  var after;
+
+  engine.applyMessage(firstMessage, 0, false);
+  engine.applyMessage(message('play', {
+    eventId: 'second', sequence: 1, targets: [target('clitoris')]
+  }), 0, false);
+  before = engine.readState();
+  firstMessage.targets[0].intensity = 99;
+  engine.applyMessage(message('update', {
+    eventId: 'first', sequence: 2, targets: [target('anus')]
+  }), 10, false);
+  after = engine.readState();
+
+  assert.notStrictEqual(after.events, before.events);
+  assert.notStrictEqual(after.events[firstKey], before.events[firstKey]);
+  assert.strictEqual(after.events[secondKey], before.events[secondKey]);
+  assert.strictEqual(after.baseline, before.baseline);
+  assert.equal(before.events[firstKey][0].sequence, 1);
+  assert.equal(before.events[firstKey][0].target.intensity, 40);
+  assert.equal(after.events[firstKey][0].sequence, 2);
+  assert.equal(after.events[firstKey][0].target.part, 'anus');
+});
+
+test('expiry keeps the internal events map when no entry reaches its boundary', function () {
+  var engine = buildAndCreateEngine();
+  var events;
+
+  engine.applyMessage(message('play', {
+    eventId: 'long', sequence: 1, targets: [target('vagina', 1000)]
+  }), 0, false);
+  events = engine.readState().events;
+
+  assert.equal(engine.expire(1, false).changed, false);
+  assert.strictEqual(engine.readState().events, events);
+  assert.equal(engine.expire(500, false).changed, false);
+  assert.strictEqual(engine.readState().events, events);
+  assert.equal(engine.expire(999, false).changed, false);
+  assert.strictEqual(engine.readState().events, events);
+});
+
+test('live state operations omit snapshots while dry runs and previews retain them', function () {
+  var engine = buildAndCreateEngine();
+  var live = engine.applyMessage(message('play', {
+    eventId: 'live', sequence: 1, targets: [target('vagina')]
+  }), 0, false);
+  var ignored = engine.applyMessage(message('update', {
+    eventId: 'live', sequence: 1, targets: [target('anus')]
+  }), 1, false);
+  var dryRun = engine.applyMessage(message('play', {
+    eventId: 'dry', sequence: 1, targets: [target('anus')]
+  }), 1, true);
+  var preview = engine.applyMessage(message('test', {
+    targets: [target('clitoris')]
+  }), 1, false);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(live, 'snapshot'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(ignored, 'snapshot'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(engine.expire(1, false), 'snapshot'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(dryRun, 'snapshot'), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(preview, 'snapshot'), true);
+});

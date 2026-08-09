@@ -17,6 +17,28 @@
     return ns.copyObject(value);
   }
 
+  function copyOwnMap(value) {
+    var key;
+    var copied = {};
+    for (key in value) {
+      if (hasOwn.call(value, key)) {
+        copied[key] = value[key];
+      }
+    }
+    return copied;
+  }
+
+  function copyTarget(target) {
+    var key;
+    var copied = {};
+    for (key in target) {
+      if (hasOwn.call(target, key)) {
+        copied[key] = target[key];
+      }
+    }
+    return copied;
+  }
+
   function addPart(parts, part) {
     if (parts.indexOf(part) === -1) {
       parts.push(part);
@@ -47,6 +69,31 @@
     };
   }
 
+  function createEventEntries(message, nowMs, nextGeneration) {
+    var index;
+    var entries = [];
+    for (index = 0; index < message.targets.length; index += 1) {
+      entries.push({
+        source: message.source,
+        eventId: message.eventId,
+        sequence: message.sequence,
+        acceptedAt: nowMs,
+        expiresAt: nowMs + message.targets[index].durationMs,
+        generation: nextGeneration,
+        target: copyTarget(message.targets[index])
+      });
+    }
+    return entries;
+  }
+
+  function createBaselineEntry(message, target) {
+    return {
+      source: message.source,
+      sequence: message.sequence,
+      target: copyTarget(target)
+    };
+  }
+
   ns.createStateEngine = function () {
     var baseline = {};
     var events = {};
@@ -63,27 +110,33 @@
       engine.events = events;
     }
 
-    function result(changed, parts, nextBaseline, nextEvents, nextGeneration, ignoredReason) {
-      return {
+    function result(changed, parts, nextBaseline, nextEvents, nextGeneration, ignoredReason, includeSnapshot) {
+      var value = {
         changed: changed,
         changedParts: parts,
-        snapshot: snapshot(nextBaseline, nextEvents, nextGeneration),
         ignoredReason: ignoredReason || null,
         rejected: null
       };
+      if (includeSnapshot) {
+        value.snapshot = snapshot(nextBaseline, nextEvents, nextGeneration);
+      }
+      return value;
     }
 
-    function capacityResult(detail) {
-      return {
+    function capacityResult(detail, includeSnapshot) {
+      var value = {
         changed: false,
         changedParts: [],
-        snapshot: snapshot(baseline, events, generation),
         ignoredReason: null,
         rejected: {
           code: 'state_capacity_exceeded',
           detail: detail
         }
       };
+      if (includeSnapshot) {
+        value.snapshot = snapshot(baseline, events, generation);
+      }
+      return value;
     }
 
     function hasActiveEntry(entries, nowMs) {
@@ -94,23 +147,6 @@
         }
       }
       return false;
-    }
-
-    function completeEvent(message, nowMs, nextGeneration) {
-      var index;
-      var entries = [];
-      for (index = 0; index < message.targets.length; index += 1) {
-        entries.push({
-          source: message.source,
-          eventId: message.eventId,
-          sequence: message.sequence,
-          acceptedAt: nowMs,
-          expiresAt: nowMs + message.targets[index].durationMs,
-          generation: nextGeneration,
-          target: copy(message.targets[index])
-        });
-      }
-      return entries;
     }
 
     function activeEventCounts(candidateEvents, nowMs) {
@@ -160,88 +196,97 @@
 
       if (message.command === 'update' &&
           (!hasOwn.call(events, key) || !hasActiveEntry(current, nowMs))) {
-        return result(false, [], baseline, events, generation, 'absent_event');
+        return result(false, [], baseline, events, generation, 'absent_event', dryRun);
       }
       if (hasOwn.call(events, key) && message.sequence <= current[0].sequence) {
-        return result(false, [], baseline, events, generation);
+        return result(false, [], baseline, events, generation, null, dryRun);
       }
-      nextEvents = copy(events);
       nextGeneration = generation + 1;
-      if (hasOwn.call(nextEvents, key)) {
-        addEntryParts(parts, nextEvents[key]);
+      nextEntries = createEventEntries(message, nowMs, nextGeneration);
+      nextEvents = copyOwnMap(events);
+      if (hasOwn.call(events, key)) {
+        addEntryParts(parts, events[key]);
       }
-      nextEntries = completeEvent(message, nowMs, nextGeneration);
       addEntryParts(parts, nextEntries);
       nextEvents[key] = nextEntries;
       counts = activeEventCounts(nextEvents, nowMs);
       if (counts.events > ns.MAX_ACTIVE_EVENTS) {
-        return capacityResult('Active event identity limit exceeded.');
+        return capacityResult('Active event identity limit exceeded.', dryRun);
       }
       if (counts.targets > ns.MAX_ACTIVE_EVENT_TARGETS) {
-        return capacityResult('Active event target limit exceeded.');
+        return capacityResult('Active event target limit exceeded.', dryRun);
       }
       if (!dryRun) {
         publish(baseline, nextEvents, baselineSequences, nextGeneration);
       }
-      return result(true, parts, baseline, nextEvents, nextGeneration);
+      return result(true, parts, baseline, nextEvents, nextGeneration, null, dryRun);
     }
 
     function applyStop(message, dryRun) {
       var key;
-      var nextEvents = copy(events);
+      var nextEvents = events;
       var parts = [];
       var requestedParts = targetParts(message.targets);
       var eventEntries;
       var keptEntries;
+      var entryChanged;
       var index;
-      var eventSource;
       var changed = false;
       var nextGeneration;
 
+      function retainRequested(entries) {
+        var retained = [];
+        var retainedIndex;
+        entryChanged = false;
+        for (retainedIndex = 0; retainedIndex < entries.length; retainedIndex += 1) {
+          if (requestedParts.indexOf(entries[retainedIndex].target.part) !== -1) {
+            addPart(parts, entries[retainedIndex].target.part);
+            entryChanged = true;
+          } else {
+            retained.push(entries[retainedIndex]);
+          }
+        }
+        return retained;
+      }
+
       if (message.eventId !== null) {
         key = eventKey(message.source, message.eventId);
-        if (hasOwn.call(nextEvents, key)) {
-          eventEntries = nextEvents[key];
+        if (hasOwn.call(events, key)) {
+          eventEntries = events[key];
           if (requestedParts.length === 0) {
+            nextEvents = copyOwnMap(events);
             addEntryParts(parts, eventEntries);
             delete nextEvents[key];
             changed = true;
           } else {
-            keptEntries = [];
-            for (index = 0; index < eventEntries.length; index += 1) {
-              if (requestedParts.indexOf(eventEntries[index].target.part) !== -1) {
-                addPart(parts, eventEntries[index].target.part);
-                changed = true;
-              } else {
-                keptEntries.push(eventEntries[index]);
-              }
-            }
-            if (keptEntries.length === 0) {
-              delete nextEvents[key];
-            } else {
-              nextEvents[key] = keptEntries;
-            }
-          }
-        }
-      } else {
-        for (key in nextEvents) {
-          if (hasOwn.call(nextEvents, key)) {
-            eventEntries = nextEvents[key];
-            eventSource = eventEntries[0].source;
-            if (eventSource === message.source) {
-              keptEntries = [];
-              for (index = 0; index < eventEntries.length; index += 1) {
-                if (requestedParts.indexOf(eventEntries[index].target.part) !== -1) {
-                  addPart(parts, eventEntries[index].target.part);
-                  changed = true;
-                } else {
-                  keptEntries.push(eventEntries[index]);
-                }
-              }
+            keptEntries = retainRequested(eventEntries);
+            if (entryChanged) {
+              nextEvents = copyOwnMap(events);
               if (keptEntries.length === 0) {
                 delete nextEvents[key];
               } else {
                 nextEvents[key] = keptEntries;
+              }
+              changed = true;
+            }
+          }
+        }
+      } else {
+        for (key in events) {
+          if (hasOwn.call(events, key)) {
+            eventEntries = events[key];
+            if (eventEntries[0].source === message.source) {
+              keptEntries = retainRequested(eventEntries);
+              if (entryChanged) {
+                if (!changed) {
+                  nextEvents = copyOwnMap(events);
+                }
+                if (keptEntries.length === 0) {
+                  delete nextEvents[key];
+                } else {
+                  nextEvents[key] = keptEntries;
+                }
+                changed = true;
               }
             }
           }
@@ -251,7 +296,7 @@
       if (changed && !dryRun) {
         publish(baseline, nextEvents, baselineSequences, nextGeneration);
       }
-      return result(changed, parts, baseline, nextEvents, nextGeneration);
+      return result(changed, parts, baseline, nextEvents, nextGeneration, null, dryRun);
     }
 
     function applyBaseline(message, dryRun) {
@@ -266,68 +311,58 @@
       var nextGeneration;
 
       if (hasOwn.call(baselineSequences, sequenceKey) && message.sequence <= currentSequence) {
-        return result(false, [], baseline, events, generation);
+        return result(false, [], baseline, events, generation, null, dryRun);
       }
-      nextBaseline = copy(baseline);
-      nextSequences = copy(baselineSequences);
-      for (key in nextBaseline) {
-        if (hasOwn.call(nextBaseline, key) && nextBaseline[key].source === message.source) {
-          addPart(parts, nextBaseline[key].target.part);
+      nextBaseline = copyOwnMap(baseline);
+      nextSequences = copyOwnMap(baselineSequences);
+      for (key in baseline) {
+        if (hasOwn.call(baseline, key) && baseline[key].source === message.source) {
+          addPart(parts, baseline[key].target.part);
           delete nextBaseline[key];
           changed = true;
         }
       }
       for (index = 0; index < message.targets.length; index += 1) {
         key = baselineKey(message.source, message.targets[index].part);
-        nextBaseline[key] = {
-          source: message.source,
-          sequence: message.sequence,
-          target: copy(message.targets[index])
-        };
+        nextBaseline[key] = createBaselineEntry(message, message.targets[index]);
         addPart(parts, message.targets[index].part);
         changed = true;
       }
       nextSequences[sequenceKey] = message.sequence;
       if (ownKeyCount(nextSequences) > ns.MAX_BASELINE_SOURCES) {
-        return capacityResult('Baseline source limit exceeded.');
+        return capacityResult('Baseline source limit exceeded.', dryRun);
       }
       if (ownKeyCount(nextBaseline) > ns.MAX_BASELINE_TARGETS) {
-        return capacityResult('Baseline target limit exceeded.');
+        return capacityResult('Baseline target limit exceeded.', dryRun);
       }
       nextGeneration = changed ? generation + 1 : generation;
       if (!dryRun) {
         publish(nextBaseline, events, nextSequences, nextGeneration);
       }
-      return result(changed, parts, nextBaseline, events, nextGeneration);
+      return result(changed, parts, nextBaseline, events, nextGeneration, null, dryRun);
     }
 
     function applyTest(message, nowMs) {
-      var nextEvents = copy(events);
+      var nextEvents = events;
       var nextGeneration = generation;
-      var entries = [];
-      var index;
+      var entries;
       if (message.targets.length > 0) {
         nextGeneration += 1;
-        for (index = 0; index < message.targets.length; index += 1) {
-          entries.push({
-            source: message.source,
-            eventId: null,
-            sequence: message.sequence,
-            acceptedAt: nowMs,
-            expiresAt: nowMs + message.targets[index].durationMs,
-            generation: nextGeneration,
-            target: copy(message.targets[index])
-          });
-        }
+        entries = createEventEntries(message, nowMs, nextGeneration);
+        nextEvents = copyOwnMap(events);
         nextEvents[ns.compositeKey(['preview', message.source, nextGeneration])] = entries;
       }
-      return result(false, targetParts(message.targets), baseline, nextEvents, nextGeneration);
+      return result(false, targetParts(message.targets), baseline, nextEvents, nextGeneration, null, true);
     }
 
     engine.baseline = baseline;
     engine.events = events;
     engine.snapshot = function () {
       return snapshot(baseline, events, generation);
+    };
+    engine.readState = function () {
+      /* Internal read-only view. Callers must never mutate retained maps or entries. */
+      return { baseline: baseline, events: events, generation: generation };
     };
     engine.clearAll = function (dryRun) {
       var nextGeneration = generation + 1;
@@ -346,7 +381,7 @@
       if (!dryRun) {
         publish({}, {}, baselineSequences, nextGeneration);
       }
-      return result(true, parts, {}, {}, nextGeneration);
+      return result(true, parts, {}, {}, nextGeneration, null, dryRun === true);
     };
     engine.applyMessage = function (message, nowMs, dryRun) {
       if (message.command === 'play' || message.command === 'update') {
@@ -364,41 +399,70 @@
       if (message.command === 'test') {
         return applyTest(message, nowMs);
       }
-      return result(false, [], baseline, events, generation);
+      return result(false, [], baseline, events, generation, null, dryRun === true);
     };
     engine.expire = function (nowMs, dryRun) {
-      var nextEvents = copy(events);
+      var nextEvents;
       var key;
       var index;
       var entries;
       var keptEntries;
+      var entryChanged;
       var parts = [];
       var changed = false;
       var nextGeneration;
-      for (key in nextEvents) {
-        if (hasOwn.call(nextEvents, key)) {
-          entries = nextEvents[key];
-          keptEntries = [];
+
+      for (key in events) {
+        if (hasOwn.call(events, key)) {
+          entries = events[key];
           for (index = 0; index < entries.length; index += 1) {
             if (entries[index].expiresAt <= nowMs) {
-              addPart(parts, entries[index].target.part);
               changed = true;
-            } else {
-              keptEntries.push(entries[index]);
+              break;
             }
           }
-          if (keptEntries.length === 0) {
-            delete nextEvents[key];
-          } else {
-            nextEvents[key] = keptEntries;
+          if (changed) {
+            break;
           }
         }
       }
-      nextGeneration = changed ? generation + 1 : generation;
-      if (changed && dryRun !== true) {
+      if (!changed) {
+        return result(false, [], baseline, events, generation, null, dryRun === true);
+      }
+
+      nextEvents = copyOwnMap(events);
+      for (key in events) {
+        if (hasOwn.call(events, key)) {
+          entries = events[key];
+          entryChanged = false;
+          for (index = 0; index < entries.length; index += 1) {
+            if (entries[index].expiresAt <= nowMs) {
+              entryChanged = true;
+              break;
+            }
+          }
+          if (entryChanged) {
+            keptEntries = [];
+            for (index = 0; index < entries.length; index += 1) {
+              if (entries[index].expiresAt <= nowMs) {
+                addPart(parts, entries[index].target.part);
+              } else {
+                keptEntries.push(entries[index]);
+              }
+            }
+            if (keptEntries.length === 0) {
+              delete nextEvents[key];
+            } else {
+              nextEvents[key] = keptEntries;
+            }
+          }
+        }
+      }
+      nextGeneration = generation + 1;
+      if (dryRun !== true) {
         publish(baseline, nextEvents, baselineSequences, nextGeneration);
       }
-      return result(changed, parts, baseline, nextEvents, nextGeneration);
+      return result(true, parts, baseline, nextEvents, nextGeneration, null, dryRun === true);
     };
     return engine;
   };
