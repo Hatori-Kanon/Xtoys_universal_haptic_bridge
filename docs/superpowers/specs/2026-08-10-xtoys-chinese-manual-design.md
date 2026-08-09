@@ -21,6 +21,26 @@
 - 代码、JSON、变量名、Job 名和函数名保持英文原样，解释全部使用中文。
 - 对可能产生真实硬件输出的操作使用醒目的安全提示，并明确区分“预览测试”和“真实输出测试”。
 
+## 官方依据与不臆测规则
+
+手册必须先核对 XToys 官方指南，再描述 XToys 平台操作。核心官方来源固定为：
+
+- Script 创建与各标签页：<https://guide.xtoys.app/script-creation/overview.html>
+- 变量、Action、Trigger、Job 与 Queue 定义：<https://guide.xtoys.app/script-creation/definitions.html>
+- 表达式与 `{变量名}` 用法：<https://guide.xtoys.app/script-creation/expressions.html>
+- ES5 JavaScript、`getVariable`、`setVariable` 与 `callAction`：<https://guide.xtoys.app/script-creation/javascript.html>
+- Webhook 创建、POST 消息、Private/Shared Webhook 与凭据规则：<https://guide.xtoys.app/tools/webhook.html>
+- Script 的加载、连接、手动启动与停止：<https://guide.xtoys.app/getting-started/using-scripts.html>
+- 官方 Job 循环示例：<https://guide.xtoys.app/script-creation/example-1.html>
+
+手册中的信息分为三类，并明确标注边界：
+
+1. **XToys 官方行为**：必须能由上述官方页面直接支持，并在相关章节附近附官方链接。
+2. **XTHB 项目约定**：例如固定 Job 名、变量名、16 槽配置和六个全局函数，必须能由仓库源码、测试或协议文档支持。
+3. **当前界面/设备相关操作**：官方公开指南未列出的 E-Stim、Rotate 或设备专属菜单不得凭空写出。手册只说明如何先在 General 页连接对应 Block，再从 XToys Action 选择器中选择实际出现的设备 Action；精确标签或生成的 Action JSON 必须由使用者在当前 XToys 界面核对并记录。
+
+若官方指南与当前界面不一致，手册以当前官方指南为原则来源，同时将界面差异列为人工验收记录，不能悄悄用推测填补。
+
 ## 交付物
 
 ### 1. 新增完整新手手册
