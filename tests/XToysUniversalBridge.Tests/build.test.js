@@ -11,6 +11,7 @@ var repositoryRoot = path.resolve(__dirname, '..', '..');
 var buildScript = path.join(repositoryRoot, 'scripts', 'Build-XToysRuntime.ps1');
 var distributionFile = path.join(repositoryRoot, 'dist', 'xtoys-universal-runtime.es5.js');
 var globalEntryFile = path.join(repositoryRoot, 'src', 'XToysUniversalBridge', '90-global-entry.es5.js');
+var runtimeHarness = require('./harness');
 
 function buildRuntime() {
   childProcess.execFileSync(
@@ -39,32 +40,16 @@ function buildRuntimeAsync() {
 }
 
 function executeDistribution() {
-  var attempt;
-  var lastError;
-  var source;
+  var source = runtimeHarness.readDistribution();
   var context;
-  for (attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      source = fs.readFileSync(distributionFile, 'utf8');
-      assert.match(source, /ns\.MODULE_GLOBAL_ENTRY/);
-      context = vm.createContext({
-        getVariable: function () {},
-        setVariable: function () {},
-        callAction: function () {},
-        console: { log: function () {} }
-      });
-      vm.runInContext(source, context, { filename: distributionFile });
-      assert.equal(context.XTHB.MODULE_GLOBAL_ENTRY, true);
-      return;
-    } catch (error) {
-      lastError = error;
-      if (error.code !== 'ENOENT' && error.code !== 'EBUSY') {
-        throw error;
-      }
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
-  }
-  throw lastError;
+  context = vm.createContext({
+    getVariable: function () {},
+    setVariable: function () {},
+    callAction: function () {},
+    console: { log: function () {} }
+  });
+  vm.runInContext(source, context, { filename: distributionFile });
+  assert.equal(context.XTHB.MODULE_GLOBAL_ENTRY, true);
 }
 
 test('build emits one ES5 runtime in module order', function () {
@@ -83,6 +68,24 @@ test('build script serializes publishers and atomically replaces from a unique t
   assert.match(script, /finally/);
   assert.match(script, /ReleaseMutex/);
   assert.match(script, /Dispose/);
+});
+
+test('build cleanup records deletion failures while always attempting both deletes and lock release', function () {
+  var script = fs.readFileSync(buildScript, 'utf8');
+  assert.match(script, /\$buildFailure/);
+  assert.match(script, /\$cleanupFailure/);
+  assert.match(script, /try\s*\{[\s\S]*Delete\(\$temporaryFile\)[\s\S]*\}\s*catch/);
+  assert.match(script, /try\s*\{[\s\S]*Delete\(\$backupFile\)[\s\S]*\}\s*catch/);
+  assert.match(script, /finally\s*\{[\s\S]*ReleaseMutex[\s\S]*finally\s*\{[\s\S]*Dispose/);
+});
+
+test('harness rejects a complete but stale distribution', function () {
+  var current = fs.readFileSync(distributionFile, 'utf8');
+  var stale = current.replace("ns.VERSION = '1.0.0';", "ns.VERSION = 'stale';");
+  assert.match(stale, /ns\.MODULE_GLOBAL_ENTRY/);
+  new vm.Script(stale);
+  assert.equal(runtimeHarness.distributionMatchesSources(current), true);
+  assert.equal(runtimeHarness.distributionMatchesSources(stale), false);
 });
 
 test('global entry remains ES5-only and cannot call forbidden direct hardware actions', function () {

@@ -77,6 +77,7 @@
     var lastSlots = {};
     var lastTuples = {};
     var pendingDispatches = {};
+    var generationFloors = {};
     var recentFailures = [];
     var runtime = {};
 
@@ -91,14 +92,19 @@
 
     function apply(slot, transition, force) {
       var tuple = coreTuple(slot);
+      var physicalSlot = copy(slot);
       var failure;
       tuple.rampSeconds = transition.rampSeconds;
       if (!force && sameTuple(lastTuples[slot.id], tuple)) {
         delete pendingDispatches[slot.id];
         return { changed: false, failure: null };
       }
+      if (generationFloors[slot.id] !== undefined) {
+        physicalSlot.generation = Math.max(physicalSlot.generation, generationFloors[slot.id] + 1);
+        generationFloors[slot.id] = physicalSlot.generation;
+      }
       try {
-        outputAdapter.applySlot(copy(slot), copy(transition));
+        outputAdapter.applySlot(physicalSlot, copy(transition));
       } catch (error) {
         failure = {
           slotId: slot.id,
@@ -271,6 +277,21 @@
         throw new Error('Runtime slot ID must be an integer from 1 through 16.');
       }
       delete lastTuples[slotId];
+    };
+
+    runtime.reserveSlotGeneration = function (slotId) {
+      var generation;
+      if (typeof slotId !== 'number' || !isFinite(slotId) || slotId % 1 !== 0 || slotId < 1 || slotId > 16) {
+        throw new Error('Runtime slot ID must be an integer from 1 through 16.');
+      }
+      generation = generationFloors[slotId];
+      if (generation === undefined) {
+        generation = lastTuples[slotId] === undefined ? 0 : lastTuples[slotId].generation;
+      }
+      generation += 1;
+      generationFloors[slotId] = generation;
+      delete lastTuples[slotId];
+      return generation;
     };
 
     runtime.forceResync = function () {

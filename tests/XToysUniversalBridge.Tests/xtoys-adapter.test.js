@@ -393,6 +393,61 @@ test('failed multi-slot reload restores outputs zeroed before the failure', func
   assert.equal(variables['xthb-slot-02-value'], 20);
 });
 
+test('failed reload completing a prior partial stop becomes fully stopped after resync', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var nextConfig = fixtureConfig();
+  var failSlotTwoCount = 0;
+  loaded.context.callAction = function (action) {
+    if (action.job === 'xthb-output-02' && failSlotTwoCount > 0) {
+      failSlotTwoCount -= 1;
+      throw new Error('slot two unavailable');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'reload-stop', sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80, durationMs: 1000 }]
+  }));
+  failSlotTwoCount = 1;
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 2);
+  nextConfig.slots[0].enabled = false;
+  nextConfig.slots[1].enabled = false;
+  variables['xthb-config-json'] = JSON.stringify(nextConfig);
+  failSlotTwoCount = 1;
+
+  assert.equal(loaded.context.xtoysBridgeReloadConfig(), 0);
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
+});
+
+test('failed reload preserves partial-stop retry state when resync still fails', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var nextConfig = fixtureConfig();
+  var failSlotTwoCount = 0;
+  loaded.context.callAction = function (action) {
+    if (action.job === 'xthb-output-02' && failSlotTwoCount > 0) {
+      failSlotTwoCount -= 1;
+      throw new Error('slot two unavailable');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'reload-stop-fail', sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80, durationMs: 1000 }]
+  }));
+  failSlotTwoCount = 1;
+  loaded.context.xtoysBridgeStopAll();
+  nextConfig.slots[0].enabled = false;
+  nextConfig.slots[1].enabled = false;
+  variables['xthb-config-json'] = JSON.stringify(nextConfig);
+  failSlotTwoCount = 2;
+
+  assert.equal(loaded.context.xtoysBridgeReloadConfig(), 0);
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 1);
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
+});
+
 test('manual slot testing clamps value and applies only an enabled configured slot', function () {
   var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
   var loaded = loadRuntime({ variables: variables });
@@ -429,6 +484,92 @@ test('manual slot testing is one-shot and the next tick reasserts protocol state
   loaded.actions.length = 0;
   assert.equal(loaded.context.xtoysBridgeTick(), 1);
   assert.deepEqual(enabledJobNames(loaded.actions), ['xthb-output-01']);
+  assert.equal(variables['xthb-slot-01-value'], 40);
+});
+
+test('manual and restored slot generations remain strictly monotonic across logical updates', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var runtimeGeneration;
+  var firstManual;
+  var secondManual;
+  var restored;
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80 }]
+  }));
+  runtimeGeneration = variables['xthb-slot-01-generation'];
+
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, 90), 1);
+  firstManual = variables['xthb-slot-01-generation'];
+  assert.ok(firstManual > runtimeGeneration);
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, 100), 1);
+  secondManual = variables['xthb-slot-01-generation'];
+  assert.ok(secondManual > firstManual);
+  assert.equal(loaded.context.xtoysBridgeTick(), 1);
+  restored = variables['xthb-slot-01-generation'];
+  assert.ok(restored > secondManual);
+  assert.equal(variables['xthb-slot-01-value'], 40);
+
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 2,
+    targets: [{ part: 'clitoris', intensity: 60 }]
+  }));
+  assert.ok(variables['xthb-slot-01-generation'] > restored);
+});
+
+test('manual generation floors survive a pending restore failure and another manual write', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var failNextSlotOne = false;
+  var failedRestoreGeneration;
+  var secondManualGeneration;
+  loaded.context.callAction = function (action) {
+    if (failNextSlotOne && action.job === 'xthb-output-01') {
+      failNextSlotOne = false;
+      throw new Error('restore failed');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80 }]
+  }));
+  loaded.context.xtoysBridgeTestSlot(1, 90);
+  failNextSlotOne = true;
+  assert.equal(loaded.context.xtoysBridgeTick(), 0);
+  failedRestoreGeneration = variables['xthb-slot-01-generation'];
+
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, 95), 1);
+  secondManualGeneration = variables['xthb-slot-01-generation'];
+  assert.ok(secondManualGeneration > failedRestoreGeneration);
+  assert.equal(loaded.context.xtoysBridgeTick(), 1);
+  assert.ok(variables['xthb-slot-01-generation'] > secondManualGeneration);
+  assert.equal(variables['xthb-slot-01-value'], 40);
+});
+
+test('a failed manual apply reserves safely and the next tick reasserts protocol output', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var failManual = false;
+  var reservedGeneration;
+  loaded.context.callAction = function (action) {
+    if (failManual && action.job === 'xthb-output-01') {
+      failManual = false;
+      throw new Error('manual apply failed');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80 }]
+  }));
+  failManual = true;
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, 100), 0);
+  reservedGeneration = variables['xthb-slot-01-generation'];
+  assert.equal(loaded.context.xtoysBridgeTick(), 1);
+  assert.ok(variables['xthb-slot-01-generation'] >= reservedGeneration);
   assert.equal(variables['xthb-slot-01-value'], 40);
 });
 

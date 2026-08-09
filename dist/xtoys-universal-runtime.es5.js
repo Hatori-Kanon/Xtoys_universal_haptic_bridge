@@ -1141,6 +1141,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var lastSlots = {};
     var lastTuples = {};
     var pendingDispatches = {};
+    var generationFloors = {};
     var recentFailures = [];
     var runtime = {};
 
@@ -1155,14 +1156,19 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
     function apply(slot, transition, force) {
       var tuple = coreTuple(slot);
+      var physicalSlot = copy(slot);
       var failure;
       tuple.rampSeconds = transition.rampSeconds;
       if (!force && sameTuple(lastTuples[slot.id], tuple)) {
         delete pendingDispatches[slot.id];
         return { changed: false, failure: null };
       }
+      if (generationFloors[slot.id] !== undefined) {
+        physicalSlot.generation = Math.max(physicalSlot.generation, generationFloors[slot.id] + 1);
+        generationFloors[slot.id] = physicalSlot.generation;
+      }
       try {
-        outputAdapter.applySlot(copy(slot), copy(transition));
+        outputAdapter.applySlot(physicalSlot, copy(transition));
       } catch (error) {
         failure = {
           slotId: slot.id,
@@ -1337,6 +1343,21 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       delete lastTuples[slotId];
     };
 
+    runtime.reserveSlotGeneration = function (slotId) {
+      var generation;
+      if (typeof slotId !== 'number' || !isFinite(slotId) || slotId % 1 !== 0 || slotId < 1 || slotId > 16) {
+        throw new Error('Runtime slot ID must be an integer from 1 through 16.');
+      }
+      generation = generationFloors[slotId];
+      if (generation === undefined) {
+        generation = lastTuples[slotId] === undefined ? 0 : lastTuples[slotId].generation;
+      }
+      generation += 1;
+      generationFloors[slotId] = generation;
+      delete lastTuples[slotId];
+      return generation;
+    };
+
     runtime.forceResync = function () {
       lastTuples = {};
       pendingDispatches = {};
@@ -1425,7 +1446,6 @@ var xtoysBridgeTestSlot;
   var config = null;
   var stopped = true;
   var stopRetryPending = false;
-  var manualGeneration = 0;
 
   ns.MODULE_GLOBAL_ENTRY = true;
 
@@ -1527,10 +1547,9 @@ var xtoysBridgeTestSlot;
     config = candidate.config;
     stopRetryPending = hasRecentFailures(runtime);
     stopped = !stopRetryPending;
-    manualGeneration = 0;
   }
 
-  function restoreActiveRuntime(wasStopped) {
+  function restoreActiveRuntime(wasStopped, wasStopRetryPending) {
     if (runtime === null) {
       return;
     }
@@ -1538,9 +1557,9 @@ var xtoysBridgeTestSlot;
       runtime.forceResync();
       if (hasRecentFailures(runtime)) {
         stopped = false;
-        stopRetryPending = wasStopped;
+        stopRetryPending = wasStopRetryPending;
       } else {
-        stopped = wasStopped;
+        stopped = wasStopped || wasStopRetryPending;
         stopRetryPending = false;
       }
     } catch (error) {
@@ -1553,13 +1572,14 @@ var xtoysBridgeTestSlot;
   function initialize() {
     var candidate;
     var wasStopped = stopped;
+    var wasStopRetryPending = stopRetryPending;
     try {
       candidate = readCandidate();
       installCandidate(candidate);
       return 1;
     } catch (error) {
       if (candidate !== undefined) {
-        restoreActiveRuntime(wasStopped);
+        restoreActiveRuntime(wasStopped, wasStopRetryPending);
       }
       reportError('config_error', error, candidate === undefined ? null : candidate.adapter);
       return 0;
@@ -1641,6 +1661,7 @@ var xtoysBridgeTestSlot;
     var numericSlot;
     var numericValue;
     var selected;
+    var generation;
     if (runtime === null || !parsedSlot.ok || !parsedValue.ok) {
       return 0;
     }
@@ -1653,16 +1674,15 @@ var xtoysBridgeTestSlot;
     if (!selected.enabled || selected.id !== numericSlot) {
       return 0;
     }
-    manualGeneration += 1;
+    generation = runtime.reserveSlotGeneration(numericSlot);
     try {
       adapter.applySlot({
         id: numericSlot,
         value: ns.clamp(numericValue, 0, 100),
         frequency: 0,
         direction: null,
-        generation: manualGeneration
+        generation: generation
       }, { rampSeconds: 0 });
-      runtime.invalidateSlot(numericSlot);
       stopped = false;
       stopRetryPending = false;
       return 1;

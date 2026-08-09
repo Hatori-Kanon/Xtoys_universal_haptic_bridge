@@ -1,11 +1,31 @@
 'use strict';
 
+var crypto = require('node:crypto');
 var fs = require('node:fs');
 var path = require('node:path');
 var vm = require('node:vm');
 
 var repositoryRoot = path.resolve(__dirname, '..', '..');
 var distributionFile = path.join(repositoryRoot, 'dist', 'xtoys-universal-runtime.es5.js');
+var sourceDirectory = path.join(repositoryRoot, 'src', 'XToysUniversalBridge');
+
+function expectedDistribution() {
+  var names = fs.readdirSync(sourceDirectory).filter(function (name) {
+    return /\.es5\.js$/.test(name) && fs.statSync(path.join(sourceDirectory, name)).isFile();
+  }).sort();
+  return names.map(function (name) {
+    return fs.readFileSync(path.join(sourceDirectory, name), 'utf8').replace(/[\r\n]+$/, '');
+  }).join('\n') + '\n';
+}
+
+function contentHash(source) {
+  return crypto.createHash('sha256').update(source, 'utf8').digest('hex');
+}
+
+function distributionMatchesSources(source) {
+  var expected = expectedDistribution();
+  return source === expected && contentHash(source) === contentHash(expected);
+}
 
 function readDistribution() {
   var attempt;
@@ -14,10 +34,10 @@ function readDistribution() {
   for (attempt = 0; attempt < 100; attempt += 1) {
     try {
       source = fs.readFileSync(distributionFile, 'utf8');
-      if (/var XTHB =/.test(source) && /ns\.MODULE_GLOBAL_ENTRY/.test(source)) {
+      if (distributionMatchesSources(source)) {
         return source;
       }
-      lastError = new Error('Distribution is incomplete during publication.');
+      lastError = new Error('Distribution does not match the current runtime sources.');
     } catch (error) {
       lastError = error;
     }
@@ -69,5 +89,7 @@ function loadRuntime(options) {
 }
 
 module.exports = {
-  loadRuntime: loadRuntime
+  distributionMatchesSources: distributionMatchesSources,
+  loadRuntime: loadRuntime,
+  readDistribution: readDistribution
 };
