@@ -21,13 +21,15 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 | --- | --- | --- |
 | `protocolVersion` | number | 必须为 `1`。 |
 | `command` | string | `play`、`update`、`stop`、`stop_all`、`set_baseline` 或 `test`。 |
-| `source` | string | 每条消息必填、非空；一个稳定的游戏/Bridge 标识。 |
-| `eventId` | string | `play`/`update` 必填；`stop` 可选。 |
+| `source` | string | 每条消息必填、非空；一个稳定的游戏/Bridge 标识；除 `stop_all` 外最多 128 个字符。 |
+| `eventId` | string | `play`/`update` 必填；`stop` 可选；最多 128 个字符。 |
 | `sequence` | number | 同一有限事件的版本号；`set_baseline` 也必填。 |
-| `states` | string[] | 可选诊断标签，最多 32 个；不参与输出叠加。 |
+| `states` | string[] | 可选诊断标签，最多 32 个；每个标签最多 128 个字符；不参与输出叠加。 |
 | `targets` | array | 效果目标；命令是否要求它由下文决定，最多 32 个。 |
 
 `source + eventId` 是有限事件的身份：不同 `source` 可以使用相同的 `eventId` 而互不影响。对同一身份，`play` 或 `update` 只有严格大于当前 `sequence` 才会替换整个事件；重复或较小序号会被忽略。接受时间以 XToys 接受消息的时刻为准，有限事件在 `acceptedAt + durationMs` 到期。
+
+超过上述单字符串限制的普通消息分别返回 `identifier_too_long` 或 `state_label_too_long`。`stop_all` 是紧急归零命令：它仍校验载荷大小、JSON、协议版本、命令、非空 `source`，以及 `states` 的数组类型和最多 32 项限制，但不会因 `source` 或状态标签超过 128 个字符而被阻止。
 
 基线按 `source` 单独保存。一个较新的 `set_baseline` 用该 `source` 的**完整快照**替换旧快照，遗漏的部位会被清除；其 `sequence` 也必须严格递增。`stop` 只操作同一 `source` 的事件。`stop_all` 不按 `source` 区分，会清除全部来源的当前基线和有限事件，但会**保留**每个 `source` 已接受的基线 `sequence` 栅栏。因此，`stop_all` 之后同一 `source` 的下一条 `set_baseline` 仍必须使用大于停机前已接受序号的 `sequence`。重启后的 Bridge 必须持久化并递增该序号，或者改用新的 `source` 身份。
 

@@ -6,6 +6,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
   ns.MAX_PAYLOAD_LENGTH = 32768;
   ns.MAX_TARGETS = 32;
   ns.MAX_STATES = 32;
+  ns.MAX_IDENTIFIER_LENGTH = 128;
+  ns.MAX_STATE_LABEL_LENGTH = 128;
   ns.MAX_TIME_MS = 600000;
   ns.clamp = function (value, min, max) {
     return Math.max(min, Math.min(max, value));
