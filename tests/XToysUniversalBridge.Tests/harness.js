@@ -7,6 +7,25 @@ var vm = require('node:vm');
 var repositoryRoot = path.resolve(__dirname, '..', '..');
 var distributionFile = path.join(repositoryRoot, 'dist', 'xtoys-universal-runtime.es5.js');
 
+function readDistribution() {
+  var attempt;
+  var source;
+  var lastError;
+  for (attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      source = fs.readFileSync(distributionFile, 'utf8');
+      if (/var XTHB =/.test(source) && /ns\.MODULE_GLOBAL_ENTRY/.test(source)) {
+        return source;
+      }
+      lastError = new Error('Distribution is incomplete during publication.');
+    } catch (error) {
+      lastError = error;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+  }
+  throw lastError;
+}
+
 function loadRuntime(options) {
   var settings = options || {};
   var variables = settings.variables || {};
@@ -30,7 +49,7 @@ function loadRuntime(options) {
     }
   });
 
-  vm.runInContext(fs.readFileSync(distributionFile, 'utf8'), context, {
+  vm.runInContext(readDistribution(), context, {
     filename: distributionFile
   });
   context.XTHB.nowMs = function () {

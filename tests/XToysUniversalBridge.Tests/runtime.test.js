@@ -474,3 +474,40 @@ test('stopAll continues past a failed slot and the next tick retries only that z
   subject.runtime.tick();
   assert.deepEqual(subject.calls, []);
 });
+
+test('recent failure snapshots are copied and a chosen slot cache can be invalidated', function () {
+  var failSlotTwo = true;
+  var subject = createSubject(0, function (slotOutput) {
+    if (slotOutput.id === 2 && failSlotTwo) {
+      failSlotTwo = false;
+      throw new Error('copy me');
+    }
+  });
+  var failures;
+  subject.runtime.handle(payload('play', {
+    eventId: 'failure-copy',
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 80, durationMs: 1000 })]
+  }));
+  failures = subject.runtime.recentFailures();
+  failures[0].detail = 'mutated';
+  assert.equal(subject.runtime.recentFailures()[0].detail, 'copy me');
+
+  subject.calls.length = 0;
+  subject.runtime.invalidateSlot(1);
+  assert.equal(subject.runtime.tick(), 2);
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2]);
+});
+
+test('forceResync redispatches the complete current enabled-slot snapshot', function () {
+  var subject = createSubject(0);
+  subject.runtime.handle(payload('set_baseline', {
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 80 })]
+  }));
+  subject.calls.length = 0;
+
+  assert.equal(subject.runtime.forceResync(), 3);
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.value; }), [40, 20, 0]);
+});

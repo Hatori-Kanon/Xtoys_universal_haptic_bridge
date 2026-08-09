@@ -6,22 +6,61 @@ $distributionDirectory = Join-Path $repositoryRoot 'dist'
 $distributionFile = Join-Path $distributionDirectory 'xtoys-universal-runtime.es5.js'
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $es6Pattern = '\b(let|const|class|async|await)\b|=>'
-$sourceFiles = Get-ChildItem -Path $sourceDirectory -Filter '*.es5.js' -File |
-  Sort-Object -Property Name
+$buildMutex = New-Object System.Threading.Mutex($false, 'Local\XTHB-XToysUniversalRuntime-Build')
+$mutexHeld = $false
+$temporaryFile = $null
+$backupFile = $null
 
-if ($sourceFiles.Count -eq 0) {
-  throw 'No ES5 runtime source files were found.'
-}
-
-$sourceText = @(
-  $sourceFiles | ForEach-Object {
-    [System.IO.File]::ReadAllText($_.FullName, $utf8NoBom).TrimEnd("`r", "`n")
+try {
+  try {
+    $mutexHeld = $buildMutex.WaitOne()
   }
-) -join "`n"
+  catch [System.Threading.AbandonedMutexException] {
+    $mutexHeld = $true
+  }
 
-if ($sourceText -match $es6Pattern) {
-  throw 'Runtime source contains non-ES5 syntax.'
+  $sourceFiles = Get-ChildItem -Path $sourceDirectory -Filter '*.es5.js' -File |
+    Sort-Object -Property Name
+
+  if ($sourceFiles.Count -eq 0) {
+    throw 'No ES5 runtime source files were found.'
+  }
+
+  $sourceText = @(
+    $sourceFiles | ForEach-Object {
+      [System.IO.File]::ReadAllText($_.FullName, $utf8NoBom).TrimEnd("`r", "`n")
+    }
+  ) -join "`n"
+
+  if ($sourceText -match $es6Pattern) {
+    throw 'Runtime source contains non-ES5 syntax.'
+  }
+
+  [System.IO.Directory]::CreateDirectory($distributionDirectory) | Out-Null
+  $temporaryFile = Join-Path $distributionDirectory (
+    'xtoys-universal-runtime.es5.js.' + [System.Guid]::NewGuid().ToString('N') + '.tmp'
+  )
+  [System.IO.File]::WriteAllText($temporaryFile, $sourceText + "`n", $utf8NoBom)
+  if ([System.IO.File]::Exists($distributionFile)) {
+    $backupFile = $temporaryFile + '.bak'
+    [System.IO.File]::Replace($temporaryFile, $distributionFile, $backupFile)
+    [System.IO.File]::Delete($backupFile)
+    $backupFile = $null
+  }
+  else {
+    [System.IO.File]::Move($temporaryFile, $distributionFile)
+  }
+  $temporaryFile = $null
 }
-
-[System.IO.Directory]::CreateDirectory($distributionDirectory) | Out-Null
-[System.IO.File]::WriteAllText($distributionFile, $sourceText + "`n", $utf8NoBom)
+finally {
+  if ($temporaryFile -ne $null -and [System.IO.File]::Exists($temporaryFile)) {
+    [System.IO.File]::Delete($temporaryFile)
+  }
+  if ($backupFile -ne $null -and [System.IO.File]::Exists($backupFile)) {
+    [System.IO.File]::Delete($backupFile)
+  }
+  if ($mutexHeld) {
+    $buildMutex.ReleaseMutex()
+  }
+  $buildMutex.Dispose()
+}

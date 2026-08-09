@@ -232,6 +232,65 @@ test('stopAll is idempotent after output and a repeated init safely resets the r
   assert.equal(loaded.actions.length, 6);
 });
 
+test('stopAll remains retryable until every enabled slot is zeroed', function () {
+  var loaded = loadRuntime({ variables: { 'xthb-config-json': JSON.stringify(fixtureConfig()) } });
+  var calls = [];
+  var failStopSlotTwo = false;
+  loaded.context.callAction = function (action) {
+    calls.push(plain(action));
+    if (failStopSlotTwo && action.job === 'xthb-output-02') {
+      failStopSlotTwo = false;
+      throw new Error('slot two stop failed');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'active-stop',
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80, durationMs: 1000 }]
+  }));
+  calls.length = 0;
+  failStopSlotTwo = true;
+
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 2);
+  assert.deepEqual(enabledJobNames(calls), [
+    'xthb-output-01', 'xthb-output-02', 'xthb-output-03'
+  ]);
+  calls.length = 0;
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 1);
+  assert.deepEqual(enabledJobNames(calls), ['xthb-output-02']);
+  calls.length = 0;
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
+  assert.deepEqual(calls, []);
+});
+
+test('protocol stop_all leaves the public stop retryable when dispatch is incomplete', function () {
+  var loaded = loadRuntime({ variables: { 'xthb-config-json': JSON.stringify(fixtureConfig()) } });
+  var calls = [];
+  var failStopSlotTwo = false;
+  loaded.context.callAction = function (action) {
+    calls.push(plain(action));
+    if (failStopSlotTwo && action.job === 'xthb-output-02') {
+      failStopSlotTwo = false;
+      throw new Error('protocol stop failed');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'protocol-active',
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80, durationMs: 1000 }]
+  }));
+  calls.length = 0;
+  failStopSlotTwo = true;
+
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('stop_all')), 1);
+  calls.length = 0;
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 1);
+  assert.deepEqual(enabledJobNames(calls), ['xthb-output-02']);
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
+});
+
 test('reload rejects bad configuration atomically and safely zeros outputs removed by a valid config', function () {
   var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
   var loaded = loadRuntime({ variables: variables });
@@ -301,6 +360,39 @@ test('reload keeps the old runtime when an output removed by the new config cann
   ]);
 });
 
+test('failed multi-slot reload restores outputs zeroed before the failure', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var nextConfig = fixtureConfig();
+  var calls = [];
+  var failRemovedSlotTwo = false;
+  loaded.context.callAction = function (action) {
+    calls.push(plain(action));
+    if (failRemovedSlotTwo && action.job === 'xthb-output-02') {
+      failRemovedSlotTwo = false;
+      throw new Error('second removed slot failed');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80 }]
+  }));
+  nextConfig.slots[0].enabled = false;
+  nextConfig.slots[1].enabled = false;
+  variables['xthb-config-json'] = JSON.stringify(nextConfig);
+  calls.length = 0;
+  failRemovedSlotTwo = true;
+
+  assert.equal(loaded.context.xtoysBridgeReloadConfig(), 0);
+  assert.deepEqual(enabledJobNames(calls), [
+    'xthb-output-01', 'xthb-output-02',
+    'xthb-output-01', 'xthb-output-02', 'xthb-output-03'
+  ]);
+  assert.equal(variables['xthb-slot-01-value'], 40);
+  assert.equal(variables['xthb-slot-02-value'], 20);
+});
+
 test('manual slot testing clamps value and applies only an enabled configured slot', function () {
   var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
   var loaded = loadRuntime({ variables: variables });
@@ -320,6 +412,45 @@ test('manual slot testing clamps value and applies only an enabled configured sl
 
   assert.equal(loaded.context.xtoysBridgeTestSlot(1, -20), 1);
   assert.equal(variables['xthb-slot-01-value'], 0);
+});
+
+test('manual slot testing is one-shot and the next tick reasserts protocol state', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80 }]
+  }));
+  loaded.actions.length = 0;
+
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, 100), 1);
+  assert.equal(variables['xthb-slot-01-value'], 100);
+  loaded.actions.length = 0;
+  assert.equal(loaded.context.xtoysBridgeTick(), 1);
+  assert.deepEqual(enabledJobNames(loaded.actions), ['xthb-output-01']);
+  assert.equal(variables['xthb-slot-01-value'], 40);
+});
+
+test('manual slot testing rejects coercive values but accepts finite numbers and numeric strings', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var invalidValues = [true, false, [], [1], {}, null, '', '   ', NaN, Infinity, -Infinity];
+  loaded.context.xtoysBridgeInit();
+  loaded.actions.length = 0;
+
+  invalidValues.forEach(function (value) {
+    assert.equal(loaded.context.xtoysBridgeTestSlot(1, value), 0, String(value));
+  });
+  assert.equal(loaded.context.xtoysBridgeTestSlot(true, 50), 0);
+  assert.equal(loaded.context.xtoysBridgeTestSlot([], 50), 0);
+  assert.equal(loaded.actions.length, 0);
+  assert.equal(loaded.context.xtoysBridgeTestSlot('1', '0'), 1);
+  assert.equal(variables['xthb-slot-01-value'], 0);
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, 100), 1);
+  assert.equal(variables['xthb-slot-01-value'], 100);
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, '101'), 1);
+  assert.equal(variables['xthb-slot-01-value'], 100);
 });
 
 test('log levels suppress off/errors successes and aggregate debug success output', function () {

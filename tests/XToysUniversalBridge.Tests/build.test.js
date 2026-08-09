@@ -5,10 +5,12 @@ var childProcess = require('node:child_process');
 var fs = require('node:fs');
 var path = require('node:path');
 var test = require('node:test');
+var vm = require('node:vm');
 
 var repositoryRoot = path.resolve(__dirname, '..', '..');
 var buildScript = path.join(repositoryRoot, 'scripts', 'Build-XToysRuntime.ps1');
 var distributionFile = path.join(repositoryRoot, 'dist', 'xtoys-universal-runtime.es5.js');
+var globalEntryFile = path.join(repositoryRoot, 'src', 'XToysUniversalBridge', '90-global-entry.es5.js');
 
 function buildRuntime() {
   childProcess.execFileSync(
@@ -19,9 +21,108 @@ function buildRuntime() {
   return fs.readFileSync(distributionFile, 'utf8');
 }
 
+function buildRuntimeAsync() {
+  return new Promise(function (resolve, reject) {
+    childProcess.execFile(
+      'powershell',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', buildScript],
+      { cwd: repositoryRoot, encoding: 'utf8' },
+      function (error) {
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      }
+    );
+  });
+}
+
+function executeDistribution() {
+  var attempt;
+  var lastError;
+  var source;
+  var context;
+  for (attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      source = fs.readFileSync(distributionFile, 'utf8');
+      assert.match(source, /ns\.MODULE_GLOBAL_ENTRY/);
+      context = vm.createContext({
+        getVariable: function () {},
+        setVariable: function () {},
+        callAction: function () {},
+        console: { log: function () {} }
+      });
+      vm.runInContext(source, context, { filename: distributionFile });
+      assert.equal(context.XTHB.MODULE_GLOBAL_ENTRY, true);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (error.code !== 'ENOENT' && error.code !== 'EBUSY') {
+        throw error;
+      }
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+  }
+  throw lastError;
+}
+
 test('build emits one ES5 runtime in module order', function () {
   var output = buildRuntime();
   assert.match(output, /var XTHB =/);
   assert.match(output, /XTHB.MODULE_NAMESPACE/);
   assert.doesNotMatch(output, /\b(let|const|class|async|await)\b|=>/);
+});
+
+test('build script serializes publishers and atomically replaces from a unique temporary file', function () {
+  var script = fs.readFileSync(buildScript, 'utf8');
+  assert.match(script, /System\.Threading\.Mutex/);
+  assert.match(script, /Guid.*NewGuid|GetRandomFileName/);
+  assert.match(script, /System\.IO\.File\]::Replace/);
+  assert.match(script, /backupFile\s*=\s*\$temporaryFile\s*\+\s*'\.bak'/);
+  assert.match(script, /finally/);
+  assert.match(script, /ReleaseMutex/);
+  assert.match(script, /Dispose/);
+});
+
+test('global entry remains ES5-only and cannot call forbidden direct hardware actions', function () {
+  var source = fs.readFileSync(globalEntryFile, 'utf8');
+  assert.doesNotMatch(source, /updateComponent|setMaxVolume|setMaxRotationSpeed|\bsetMax\w*|eval\(|Function\(/);
+  assert.doesNotMatch(source, /\b(let|const|class|async|await)\b|=>/);
+});
+
+test('concurrent builders never expose a truncated distribution to readers', { timeout: 30000 }, function () {
+  var builds = [];
+  var failure = null;
+  var reads = 0;
+  var timer;
+  var index;
+  executeDistribution();
+  timer = setInterval(function () {
+    try {
+      executeDistribution();
+      reads += 1;
+    } catch (error) {
+      if (failure === null) {
+        failure = error;
+      }
+    }
+  }, 1);
+  for (index = 0; index < 12; index += 1) {
+    builds.push(buildRuntimeAsync());
+  }
+  return Promise.all(builds).then(function () {
+    var leftovers;
+    clearInterval(timer);
+    executeDistribution();
+    assert.equal(failure, null);
+    assert.ok(reads > 0);
+    leftovers = fs.readdirSync(path.dirname(distributionFile)).filter(function (name) {
+      return /xtoys-universal-runtime\.es5\.js\..*\.(tmp|bak)$/.test(name);
+    });
+    assert.deepEqual(leftovers, []);
+  }, function (error) {
+    clearInterval(timer);
+    throw error;
+  });
 });

@@ -262,6 +262,23 @@
       return engine.snapshot();
     };
 
+    runtime.recentFailures = function () {
+      return copy(recentFailures);
+    };
+
+    runtime.invalidateSlot = function (slotId) {
+      if (typeof slotId !== 'number' || !isFinite(slotId) || slotId % 1 !== 0 || slotId < 1 || slotId > 16) {
+        throw new Error('Runtime slot ID must be an integer from 1 through 16.');
+      }
+      delete lastTuples[slotId];
+    };
+
+    runtime.forceResync = function () {
+      lastTuples = {};
+      pendingDispatches = {};
+      return runtime.tick();
+    };
+
     return runtime;
   };
 }(XTHB));
