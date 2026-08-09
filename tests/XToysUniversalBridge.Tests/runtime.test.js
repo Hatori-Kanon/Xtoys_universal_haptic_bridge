@@ -53,13 +53,16 @@ function payload(command, values) {
   return JSON.stringify(result);
 }
 
-function createSubject(now) {
+function createSubject(now, applySlot) {
   var loaded = loadRuntime({ now: now === undefined ? 0 : now });
   var calls = [];
   var logs = [];
   var adapter = {
     applySlot: function (slotOutput, transition) {
       calls.push({ slot: slotOutput, transition: transition });
+      if (applySlot) {
+        applySlot(slotOutput, transition);
+      }
     },
     log: function (preview) {
       logs.push(copy(preview));
@@ -389,4 +392,85 @@ test('stopAll clears state and dispatches zero-ramp snapshots to every enabled s
   });
   assert.deepEqual(snapshot.baseline, {});
   assert.deepEqual(snapshot.events, {});
+});
+
+test('a failed middle-slot dispatch does not block later slots and retries only the failure', function () {
+  var failSlotTwo = true;
+  var subject = createSubject(0, function (slotOutput) {
+    if (slotOutput.id === 2 && failSlotTwo) {
+      failSlotTwo = false;
+      throw new Error('slot 2 unavailable');
+    }
+  });
+  var result = subject.runtime.handle(payload('play', {
+    eventId: 'multi-slot',
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 80, durationMs: 1000 })]
+  }));
+
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
+  assert.equal(result.changedSlots, 2);
+  assert.deepEqual(copy(result.dispatchFailures), [{
+    slotId: 2,
+    code: 'adapter_apply_failed',
+    detail: 'slot 2 unavailable'
+  }]);
+  assert.deepEqual(subject.logs, [{
+    type: 'dispatch_error',
+    slotId: 2,
+    code: 'adapter_apply_failed',
+    detail: 'slot 2 unavailable'
+  }]);
+
+  subject.calls.length = 0;
+  subject.runtime.tick();
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [2]);
+  subject.calls.length = 0;
+  subject.runtime.tick();
+  assert.deepEqual(subject.calls, []);
+});
+
+test('stopAll continues past a failed slot and the next tick retries only that zero', function () {
+  var failStopSlotTwo = false;
+  var subject = createSubject(0, function (slotOutput) {
+    if (slotOutput.id === 2 && failStopSlotTwo) {
+      failStopSlotTwo = false;
+      throw new Error('slot 2 stop failed');
+    }
+  });
+  var stopCalls;
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'active',
+    sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 80, durationMs: 1000, rampDownMs: 4000
+    })]
+  }));
+  subject.calls.length = 0;
+  subject.logs.length = 0;
+  failStopSlotTwo = true;
+  subject.runtime.stopAll();
+  stopCalls = subject.calls.slice();
+
+  assert.deepEqual(stopCalls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
+  stopCalls.forEach(function (call) {
+    assert.equal(call.slot.value, 0);
+    assert.equal(call.transition.rampSeconds, 0);
+  });
+  assert.deepEqual(subject.logs, [{
+    type: 'dispatch_error',
+    slotId: 2,
+    code: 'adapter_apply_failed',
+    detail: 'slot 2 stop failed'
+  }]);
+
+  subject.calls.length = 0;
+  subject.runtime.tick();
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [2]);
+  assert.equal(subject.calls[0].slot.value, 0);
+  assert.equal(subject.calls[0].transition.rampSeconds, 0);
+  subject.calls.length = 0;
+  subject.runtime.tick();
+  assert.deepEqual(subject.calls, []);
 });

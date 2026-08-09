@@ -76,6 +76,8 @@
     var engine;
     var lastSlots = {};
     var lastTuples = {};
+    var pendingDispatches = {};
+    var recentFailures = [];
     var runtime = {};
 
     if (!validation.ok) {
@@ -89,14 +91,62 @@
 
     function apply(slot, transition, force) {
       var tuple = coreTuple(slot);
+      var failure;
       tuple.rampSeconds = transition.rampSeconds;
       if (!force && sameTuple(lastTuples[slot.id], tuple)) {
-        return false;
+        delete pendingDispatches[slot.id];
+        return { changed: false, failure: null };
+      }
+      try {
+        outputAdapter.applySlot(copy(slot), copy(transition));
+      } catch (error) {
+        failure = {
+          slotId: slot.id,
+          code: 'adapter_apply_failed',
+          detail: error && error.message !== undefined ? String(error.message) : String(error)
+        };
+        pendingDispatches[slot.id] = {
+          tuple: copy(tuple),
+          transition: copy(transition)
+        };
+        return { changed: false, failure: failure };
       }
       lastTuples[slot.id] = copy(tuple);
       lastSlots[slot.id] = copy(slot);
-      outputAdapter.applySlot(copy(slot), copy(transition));
-      return true;
+      delete pendingDispatches[slot.id];
+      return { changed: true, failure: null };
+    }
+
+    function transitionFor(slot, expiredParts) {
+      var pending = pendingDispatches[slot.id];
+      if (pending !== undefined && sameCore(pending.tuple, coreTuple(slot))) {
+        return copy(pending.transition);
+      }
+      return {
+        rampSeconds: rampSeconds(lastSlots[slot.id], slot, lastTuples[slot.id], expiredParts)
+      };
+    }
+
+    function dispatchResult(changedSlots, failures) {
+      return { changedSlots: changedSlots, failures: failures };
+    }
+
+    function reportFailures(failures) {
+      var index;
+      var logEntry;
+      recentFailures = copy(failures);
+      if (typeof outputAdapter.log !== 'function') {
+        return;
+      }
+      for (index = 0; index < failures.length; index += 1) {
+        logEntry = copy(failures[index]);
+        logEntry.type = 'dispatch_error';
+        try {
+          outputAdapter.log(logEntry);
+        } catch (ignored) {
+          /* Logging cannot prevent best-effort physical dispatch progress. */
+        }
+      }
     }
 
     function dispatch(atMs, expiredParts) {
@@ -104,19 +154,23 @@
       var index;
       var slot;
       var transition;
+      var applied;
       var changed = 0;
+      var failures = [];
       for (index = 0; index < slots.length; index += 1) {
         slot = slots[index];
         if (slot.enabled) {
-          transition = {
-            rampSeconds: rampSeconds(lastSlots[slot.id], slot, lastTuples[slot.id], expiredParts)
-          };
-          if (apply(slot, transition, false)) {
+          transition = transitionFor(slot, expiredParts);
+          applied = apply(slot, transition, false);
+          if (applied.changed) {
             changed += 1;
+          }
+          if (applied.failure !== null) {
+            failures.push(applied.failure);
           }
         }
       }
-      return changed;
+      return dispatchResult(changed, failures);
     }
 
     function preview(message, atMs) {
@@ -134,7 +188,8 @@
       var applied;
       var expired;
       var testPreview;
-      var changedSlots;
+      var dispatched;
+      var stopped;
       if (!parsed.ok) {
         return parsed;
       }
@@ -147,22 +202,31 @@
         return { ok: true, changedSlots: 0, preview: testPreview };
       }
       if (parsed.message.command === 'stop_all') {
-        return { ok: true, changedSlots: runtime.stopAll() };
+        stopped = runtime.stopAll();
+        return {
+          ok: true,
+          changedSlots: stopped,
+          dispatchFailures: copy(recentFailures)
+        };
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
       expired = engine.expire(atMs, false);
-      changedSlots = dispatch(atMs, expired.changedParts);
+      dispatched = dispatch(atMs, expired.changedParts);
+      reportFailures(dispatched.failures);
       return {
         ok: true,
         changed: applied.changed || expired.changed,
-        changedSlots: changedSlots
+        changedSlots: dispatched.changedSlots,
+        dispatchFailures: copy(dispatched.failures)
       };
     };
 
     runtime.tick = function () {
       var atMs = now();
       var expired = engine.expire(atMs, false);
-      return dispatch(atMs, expired.changedParts);
+      var dispatched = dispatch(atMs, expired.changedParts);
+      reportFailures(dispatched.failures);
+      return dispatched.changedSlots;
     };
 
     runtime.stopAll = function () {
@@ -170,7 +234,9 @@
       var slots;
       var slot;
       var index;
+      var applied;
       var changed = 0;
+      var failures = [];
       engine.clearAll(false);
       slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
       for (index = 0; index < slots.length; index += 1) {
@@ -179,11 +245,16 @@
           slot.value = 0;
           slot.frequency = 0;
           slot.direction = null;
-          if (apply(slot, { rampSeconds: 0 }, true)) {
+          applied = apply(slot, { rampSeconds: 0 }, true);
+          if (applied.changed) {
             changed += 1;
+          }
+          if (applied.failure !== null) {
+            failures.push(applied.failure);
           }
         }
       }
+      reportFailures(failures);
       return changed;
     };
 
