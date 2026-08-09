@@ -46,10 +46,14 @@ State entries and normalized targets become immutable by convention after constr
 Use small ES5 helpers that copy only own properties:
 
 - A shallow map copy copies the top-level map while sharing unchanged immutable values.
+- `copyTarget(target)` is the only target-copy boundary used when state takes ownership of normalized message data.
+- `createEventEntries(message, nowMs, generation)` and `createBaselineEntry(message, target)` are the only factories for retained state entries.
 - A changed event receives a newly constructed target-entry array.
 - A partial stop or expiry creates a new array only for the affected event.
 - Baseline replacement creates new entries only for the replaced source.
 - `completeEvent` constructs a replacement event exactly once.
+
+Capacity evaluation and state construction are read-only until both succeed. Each operation computes totals and candidate maps in local variables, then calls `publish(...)` once. A rejection or construction error must leave the live maps, generation, snapshots, and physical output unchanged.
 
 `expire(nowMs)` first performs a read-only scan. If nothing expired, it returns `changed: false` without cloning the event map or publishing state. If entries expired, it shallow-copies the event map once and replaces or deletes only affected arrays.
 
@@ -106,6 +110,9 @@ Required automated coverage:
 7. Multiple unique concurrent events remain deterministic at the configured maximum.
 8. All existing pulse, ramp, rotation, retry, reload, manual-test, generation, and stop tests remain green.
 9. The rebuilt distribution remains exact-source, LF-only, ES5-only, and free of forbidden direct hardware actions.
+10. At transient event capacity, a successful `stop` immediately frees one event slot so the next `handle(play)` succeeds without an intervening tick; an expired event likewise does not create a false-full rejection.
+11. Copy-on-write structural sharing: an old internal read-only view remains unchanged, an unaffected event array keeps its identity, an affected event array is replaced, and mutating the original message after acceptance cannot mutate retained state.
+12. Both `handle` and `tick` use the same no-allocation expiry fast path when no event expired.
 
 Add a non-gating Node benchmark command that reports same-event update throughput, unique-event admission throughput, and tick cost at several active-event counts. Timing numbers are diagnostic only because XToys runs through JS-Interpreter; correctness tests enforce structural bounds and dispatch counts instead of machine-dependent millisecond thresholds.
 
@@ -117,3 +124,18 @@ Add a non-gating Node benchmark command that reports same-event update throughpu
 - Removing handle-time expiry safety.
 - Pausing failed zero-output retries through a circuit breaker.
 - Adding arbitrary unvalidated body-part names as part of this performance pass.
+
+## 7. Deferred follow-up: perceptible equal-output retrigger
+
+Protocol v1 is state-oriented. If one transient has already reached its target and a newly winning stimulus requests the same physical tuple, re-sending the same target with a different `rampSeconds` does not make XToys return to baseline first. The new stimulus can therefore be physically imperceptible even though its event identity is new.
+
+This is a haptic-behavior feature, not a performance optimization, and must be designed after this hardening pass. The follow-up design will add an explicit optional retrigger envelope computed by the game Bridge, conceptually:
+
+~~~text
+current transient output
+-> current winning baseline (or zero when absent)
+-> optional baseline hold interval
+-> new transient target using its ramp-up interval
+~~~
+
+The follow-up must define protocol fields, duration accounting, pulse interaction, rapid repeated-event cancellation, generation safety, intensity and rotation behavior, and the scheduler's 0.1-second resolution. Ordinary events will retain state-oriented duplicate suppression; only an explicit retrigger request may create the baseline-to-attack envelope.

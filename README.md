@@ -24,6 +24,10 @@ See the [approved universal bridge specification](docs/superpowers/specs/2026-08
 
 The template is manually started and stopped by the user. It controls current output only; it never changes a device's maximum intensity or maximum rotation speed.
 
+## Planned follow-up
+
+After the current runtime performance-hardening pass, design an explicit optional retrigger envelope for repeated stimuli whose resolved physical output is unchanged. This will let a game Bridge request a brief return to the winning baseline followed by a new ramp to the attack target, so equal-strength overlapping attacks can remain perceptible. A changed `rampSeconds` alone does not imply that baseline reset, and the behavior will not be added implicitly to ordinary protocol v1 events.
+
 ## Repository layout
 
 - `src/`: Existing game adapters and diagnostic probes used to derive the universal design.
