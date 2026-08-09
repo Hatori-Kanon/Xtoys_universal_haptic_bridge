@@ -88,6 +88,42 @@ function lastCall(subject, slotId) {
   return calls[calls.length - 1];
 }
 
+function publicSubject(logLevel) {
+  var config = fixtureConfig();
+  var loaded;
+  config.logLevel = logLevel || 'errors';
+  loaded = loadRuntime({
+    now: 0,
+    variables: { 'xthb-config-json': JSON.stringify(config) }
+  });
+  return loaded;
+}
+
+function slotVariables(loaded, slotId) {
+  var suffix = slotId < 10 ? '0' + slotId : String(slotId);
+  return {
+    value: loaded.variables['xthb-slot-' + suffix + '-value'],
+    frequency: loaded.variables['xthb-slot-' + suffix + '-frequency'],
+    rampSeconds: loaded.variables['xthb-slot-' + suffix + '-ramp-seconds'],
+    directionCode: loaded.variables['xthb-slot-' + suffix + '-direction-code'],
+    generation: loaded.variables['xthb-slot-' + suffix + '-generation']
+  };
+}
+
+function expectedJobActions() {
+  return [1, 2, 3].map(function (slotId) {
+    var suffix = '0' + slotId;
+    return { type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' };
+  });
+}
+
+function assertPublicStep(loaded, actionStart, expectedSlots) {
+  assert.deepEqual(copy(loaded.actions.slice(actionStart)), expectedJobActions());
+  [1, 2, 3].forEach(function (slotId) {
+    assert.deepEqual(slotVariables(loaded, slotId), expectedSlots[slotId - 1]);
+  });
+}
+
 test('play dispatches immediately through the adapter with a rising ramp', function () {
   var subject = createSubject(1000);
   var result = subject.runtime.handle(payload('play', {
@@ -510,4 +546,206 @@ test('forceResync redispatches the complete current enabled-slot snapshot', func
   assert.equal(subject.runtime.forceResync(), 3);
   assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
   assert.deepEqual(subject.calls.map(function (call) { return call.slot.value; }), [40, 20, 0]);
+});
+
+test('built public globals preserve the complete baseline attack stop expiry and stop-all flow', function () {
+  var loaded = publicSubject();
+  var actionStart = 0;
+
+  assert.equal(loaded.context.xtoysBridgeInit(), 1);
+  assertPublicStep(loaded, actionStart, [
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 1 },
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 1 },
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 1 }
+  ]);
+
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    source: 'acceptance',
+    sequence: 1,
+    targets: [
+      target('clitoris', {
+        intensity: 20, frequency: 11, rampUpMs: 1000, rampDownMs: 2000
+      }),
+      target('vagina', {
+        rotateSpeed: 20, rotateDirection: 'clockwise', rampUpMs: 500, rampDownMs: 700
+      })
+    ]
+  })), 1);
+  assertPublicStep(loaded, actionStart, [
+    { value: 10, frequency: 11, rampSeconds: 1, directionCode: 0, generation: 2 },
+    { value: 5, frequency: 0, rampSeconds: 1, directionCode: 0, generation: 2 },
+    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1, generation: 2 }
+  ]);
+
+  loaded.setNow(100);
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+    source: 'acceptance',
+    eventId: 'clitoris-attack',
+    sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 80, frequency: 70, durationMs: 500,
+      rampUpMs: 200, rampDownMs: 400, priority: 10
+    })]
+  })), 1);
+  assertPublicStep(loaded, actionStart, [
+    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0, generation: 3 },
+    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 3 },
+    { value: 10, frequency: 0, rampSeconds: 0, directionCode: 1, generation: 3 }
+  ]);
+
+  loaded.setNow(120);
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+    source: 'acceptance',
+    eventId: 'vagina-attack',
+    sequence: 1,
+    targets: [target('vagina', {
+      rotateSpeed: 60, rotateDirection: 'clockwise', durationMs: 800,
+      rampUpMs: 300, rampDownMs: 600, priority: 20
+    })]
+  })), 1);
+  assertPublicStep(loaded, actionStart, [
+    { value: 46, frequency: 70, rampSeconds: 0, directionCode: 0, generation: 4 },
+    { value: 24, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 4 },
+    { value: 37, frequency: 0, rampSeconds: 0.3, directionCode: 1, generation: 4 }
+  ]);
+
+  loaded.setNow(150);
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('update', {
+    source: 'acceptance',
+    eventId: 'vagina-attack',
+    sequence: 2,
+    targets: [target('vagina', {
+      rotateSpeed: 80, rotateDirection: 'counterclockwise', durationMs: 800,
+      rampUpMs: 100, rampDownMs: 500, priority: 20
+    })]
+  })), 1);
+  assertPublicStep(loaded, actionStart, [
+    { value: 46, frequency: 70, rampSeconds: 0, directionCode: 0, generation: 5 },
+    { value: 24, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 5 },
+    { value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1, generation: 5 }
+  ]);
+
+  loaded.setNow(200);
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('stop', {
+    source: 'acceptance',
+    eventId: 'clitoris-attack',
+    targets: [target('clitoris')]
+  })), 1);
+  assertPublicStep(loaded, actionStart, [
+    { value: 10, frequency: 11, rampSeconds: 0.4, directionCode: 0, generation: 6 },
+    { value: 5, frequency: 0, rampSeconds: 0.4, directionCode: 0, generation: 6 },
+    { value: 46, frequency: 0, rampSeconds: 0, directionCode: -1, generation: 6 }
+  ]);
+
+  loaded.setNow(949);
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeTick(), 0);
+  assert.deepEqual(loaded.actions.slice(actionStart), []);
+  assert.deepEqual(slotVariables(loaded, 3), {
+    value: 46, frequency: 0, rampSeconds: 0, directionCode: -1, generation: 6
+  });
+
+  loaded.setNow(950);
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeTick(), 3);
+  assertPublicStep(loaded, actionStart, [
+    { value: 10, frequency: 11, rampSeconds: 0, directionCode: 0, generation: 7 },
+    { value: 5, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 7 },
+    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1, generation: 7 }
+  ]);
+
+  loaded.setNow(1000);
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    source: 'acceptance', sequence: 2, targets: []
+  })), 1);
+  assertPublicStep(loaded, actionStart, [
+    { value: 0, frequency: 0, rampSeconds: 2, directionCode: 0, generation: 8 },
+    { value: 0, frequency: 0, rampSeconds: 2, directionCode: 0, generation: 8 },
+    { value: 0, frequency: 0, rampSeconds: 0.7, directionCode: 0, generation: 8 }
+  ]);
+
+  actionStart = loaded.actions.length;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('stop_all', {
+    source: 'acceptance'
+  })), 1);
+  assertPublicStep(loaded, actionStart, [
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 },
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 },
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 }
+  ]);
+});
+
+test('built public handler rejects malformed and oversized payloads without output', function () {
+  var loaded = publicSubject();
+  var variablesBefore;
+  var actionsBefore;
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    source: 'acceptance-invalid',
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 20 })]
+  }));
+  variablesBefore = copy(loaded.variables);
+  actionsBefore = copy(loaded.actions);
+
+  assert.equal(loaded.context.xtoysBridgeHandle('{'), 0);
+  assert.equal(loaded.context.xtoysBridgeHandle(new Array(32770).join('x')), 0);
+  assert.deepEqual(copy(loaded.variables), variablesBefore);
+  assert.deepEqual(copy(loaded.actions), actionsBefore);
+});
+
+test('built public handler processes 500 timed update commands with deterministic batched debug output', function () {
+  var loaded = publicSubject('debug');
+  var index;
+  loaded.context.xtoysBridgeInit();
+  loaded.actions.length = 0;
+  loaded.logs.length = 0;
+
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+    source: 'acceptance-density',
+    eventId: 'dense',
+    sequence: 0,
+    targets: [target('clitoris', {
+      intensity: 20, frequency: 55, durationMs: 1000,
+      rampUpMs: 200, rampDownMs: 300
+    })]
+  })), 1);
+
+  for (index = 1; index <= 500; index += 1) {
+    loaded.setNow(index);
+    assert.equal(loaded.context.xtoysBridgeHandle(payload('update', {
+      source: 'acceptance-density',
+      eventId: 'dense',
+      sequence: index,
+      targets: [target('clitoris', {
+        intensity: index % 2 === 0 ? 80 : 20,
+        frequency: 55,
+        durationMs: 1000,
+        rampUpMs: 200,
+        rampDownMs: 300
+      })]
+    })), 1);
+  }
+
+  assert.equal(loaded.actions.length, 1503);
+  assert.deepEqual(copy(loaded.actions.slice(-3)), expectedJobActions());
+  assert.deepEqual(slotVariables(loaded, 1), {
+    value: 40, frequency: 55, rampSeconds: 0.2, directionCode: 0, generation: 502
+  });
+  assert.deepEqual(slotVariables(loaded, 2), {
+    value: 20, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 502
+  });
+  assert.deepEqual(slotVariables(loaded, 3), {
+    value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 502
+  });
+  assert.equal(loaded.logs.length, 15);
+  loaded.logs.forEach(function (entry) {
+    assert.equal(entry, 'XTHB debug: 100 successful slot updates.');
+  });
 });

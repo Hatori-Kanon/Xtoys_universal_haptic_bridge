@@ -94,6 +94,13 @@ test('global entry remains ES5-only and cannot call forbidden direct hardware ac
   assert.doesNotMatch(source, /\b(let|const|class|async|await)\b|=>/);
 });
 
+test('release distribution excludes forbidden hardware aliases and non-ES5 syntax', function () {
+  var source = buildRuntime();
+  assert.equal(runtimeHarness.distributionMatchesSources(source), true);
+  assert.doesNotMatch(source,
+    /setMax|eval\(|Function\(|rotateReverse|setPattern|=>|\b(let|const|class|async|await)\b/);
+});
+
 test('concurrent builders never expose a truncated distribution to readers', { timeout: 30000 }, function () {
   var builds = [];
   var failure = null;

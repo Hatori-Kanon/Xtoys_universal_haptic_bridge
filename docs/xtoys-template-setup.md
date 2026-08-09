@@ -139,9 +139,20 @@ xtoysBridgeTick();
 - `xtoysBridgeReloadConfig()`：重新读取 `xthb-config-json`；只在准备切换配置时调用。
 - `xtoysBridgeTestSlot(slotId, value)`：手动向一个已启用配置槽输出一次 0–100 值。它与协议命令 `test` 不同，后者不驱动硬件。
 
-## 6. 首次人工冒烟检查
+## 6. 最终用户协助冒烟检查（待完成）
 
-1. 粘贴构建产物，完成一个强度槽和一个旋转槽的配置，启动 Script。
-2. 发送协议文档的基线、`play`、方向 `update` 与 `stop_all` 示例。
-3. 确认强度、渐变、显式方向、有限事件结束后的基线恢复，以及 Final Actions 的零值停止。
-4. 记录实际测试的 XToys Script 修订和任何 UI Action JSON 差异；在真实设备确认前，不应宣称完成硬件验证。
+此检查目前明确为 **待用户在 XToys 与实际硬件上完成**。自动化测试只验证构建产物、变量和 `updateJob` Action；它不代表真实设备已经验证成功。
+
+- [ ] 将 `dist/xtoys-universal-runtime.es5.js` 的完整内容粘贴到 XToys Script 的全局 JavaScript 页面。
+- [ ] 按本指南建立一个启用的强度槽和一个启用的旋转槽，并保留其余 14 个禁用槽。
+- [ ] 配置 Initial Actions、`xthb-scheduler`、两个输出 Job 和 Final Actions，然后启动 Script。
+- [ ] 发送协议文档中的基线示例；确认强度与旋转基线、渐入时间和顺时针方向。
+- [ ] 发送 `play` 示例；确认强度变化和配置的 ramp 生效。
+- [ ] 发送较高 `sequence` 的方向 `update` 示例；确认旋转方向只在该更新后切换为逆时针。
+- [ ] 等待有限事件到期并让调度 Job tick；确认输出按 ramp 恢复到最新基线，而不是归零或恢复旧状态。
+- [ ] 发送 `stop_all` 示例；确认所有已启用输出 Job 收到零值、零频率和无方向输出。
+- [ ] 停止 Script；确认 Final Actions 再次把强度、旋转速度和适用的频率显式归零。
+- [ ] 记录本次测试使用的 XToys Script 修订：`待填写`。
+- [ ] 导出并记录与本文示例不同的 XToys UI Action JSON（若无差异也写明“无”）：`待填写`。
+
+在以上项目全部完成并记录之前，硬件验证状态保持为“待完成”，也不要开始依赖真实设备行为的游戏适配迁移。
