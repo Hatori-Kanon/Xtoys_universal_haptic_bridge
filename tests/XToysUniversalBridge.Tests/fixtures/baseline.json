@@ -1,0 +1,13 @@
+{
+  "protocolVersion": 1,
+  "command": "set_baseline",
+  "source": "fixture",
+  "sequence": 2,
+  "states": ["aroused"],
+  "targets": [
+    {
+      "part": "clitoris",
+      "intensity": 25
+    }
+  ]
+}
