@@ -179,3 +179,194 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 | `xtoysBridgeStopAll()` | Final Actions 的第 1 步 | 清空运行状态，并以零渐变尝试归零每个启用槽；可再次调用以重试失败槽。 |
 | `xtoysBridgeReloadConfig()` | 准备切换整份配置时 | 重新读取 `xthb-config-json`；不要把它当成每条游戏消息的处理函数。 |
 | `xtoysBridgeTestSlot()` | 人工逐槽低输出检查 | `xtoysBridgeTestSlot()` 会产生真实硬件输出；实际签名为 `xtoysBridgeTestSlot(slotId, value)`，仅对已启用的 1–16 槽接受 0–100 值。与只预览、不驱动物理输出的协议 `test` 不同。 |
+
+## 设备、逻辑部位与 16 槽规划
+
+**XTHB 项目约定**：16 个槽是固定的逻辑出口，不是 16 台设备的要求。先列出实际连接的每个物理设备和子通道，再决定是否启用对应槽；设备菜单、子通道名称和 Action 字段均为 **当前界面核对**。同一设备的独立振动执行器和独立旋转执行器必须使用不同槽；多个设备只有在应收到完全相同的输出时才可接到同一槽。
+
+先在 XToys 把最大强度、最大转速设到在场使用者认可的低安全范围；这是 **当前界面核对**，不把数值或菜单名假定为官方固定值。真实输出时一次只连接当前测试槽，其他物理输出保持断开或禁用。
+
+| 槽 | 物理设备 / 子通道 | 逻辑部位 | 类型 | 当前界面核对的设备 Action JSON | 填写栏 |
+| --- | --- | --- | --- | --- | --- |
+| 01 | ______ | ______ | intensity（频率） | ______ | ______ |
+| 02 | ______ | ______ | intensity | ______ | ______ |
+| 03 | ______ | ______ | rotation | ______ | ______ |
+| 04–16 | ______ | ______ | intensity / rotation | ______ | ______ |
+
+一个 `routes` 对象可把多个逻辑叶子部位指向同一槽，例如下方槽 01 同时接收 `clitoris` 和 `vagina`。这表示这些部位共用这个物理输出并进入同一仲裁，不会把两个值简单相加：基线候选取有效值较高者，有限事件按优先级、有效值、sequence、接受时间和 generation 选择胜者。若这种共享不符合设备预期，应拆成不同槽。
+
+## 完整 16 槽配置
+
+将下列对象整体序列化后填入 `xthb-config-json`。这是唯一的配置 JSON 代码块；保存前调用 `XTHB.validateConfig(config)` 或启动 `xtoysBridgeInit()`，只有验证成功才连接设备。它含五个固定组、连续 1–16 槽、一个 `frequencyEnabled: true` 的强度槽、一个旋转槽，以及保留但禁用的未用槽。
+
+```json
+{
+  "logLevel": "errors",
+  "globalMultiplier": 0.5,
+  "groups": {
+    "genitals": { "clitoris": 1, "vulva": 0.8, "vagina": 0.8, "penis": 0.8, "prostate": 0.8 },
+    "lower_body": { "vulva": 0.8, "vagina": 0.8, "anus": 0.7, "butt": 0.6, "penis": 0.7, "prostate": 0.7 },
+    "double_hole": { "vagina": 1, "anus": 1 },
+    "whole_body": { "mouth": 0.4, "breast": 0.5, "clitoris": 0.7, "vagina": 0.7, "anus": 0.5, "penis": 0.7 },
+    "mixed": { "nipple": 0.5, "armpit": 0.4, "vulva": 0.6, "butt": 0.5, "prostate": 0.6 }
+  },
+  "slots": [
+    { "id": 1, "enabled": true, "type": "intensity", "frequencyEnabled": true, "routes": { "clitoris": 1, "vagina": 0.7 } },
+    { "id": 2, "enabled": true, "type": "intensity", "frequencyEnabled": false, "routes": { "vulva": 1 } },
+    { "id": 3, "enabled": true, "type": "rotation", "frequencyEnabled": false, "routes": { "vagina": 1 } },
+    { "id": 4, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 5, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 6, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 7, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 8, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 9, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 10, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 11, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 12, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 13, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 14, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 15, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} },
+    { "id": 16, "enabled": false, "type": "intensity", "frequencyEnabled": false, "routes": {} }
+  ]
+}
+```
+
+字段说明（均为 **XTHB 项目约定**）：
+
+- `logLevel` 只能是 `off`、`errors` 或 `debug`；初次验收使用 `errors`，便于记录拒绝原因。
+- `globalMultiplier` 是非负的总路由倍率。一个组目标经过的有效值是游戏值 × 组权重 × 槽 `routes` 权重 × 此倍率，最后夹到 0–100；它不是 XToys 的设备最大值设置。
+- `groups` 必须恰有 `genitals`、`lower_body`、`double_hole`、`whole_body`、`mixed` 五键。每个组内的 0–1 权重只在游戏发送该组名时展开到叶子部位。
+- 每个 `slots` 项必须有连续且唯一的 `id`、布尔 `enabled`、`intensity` 或 `rotation` 的 `type`、布尔 `frequencyEnabled` 和叶子部位到 0–1 的 `routes`。
+- 本手册把 `frequencyEnabled` 仅用于强度槽的频率 Action；推荐的旋转槽设为 `false`，并只把 `rotateSpeed` 与显式 `rotateDirection` 接到 Rotate Action。为旋转槽打开它本身不会在此接线方案中产生频率控制。
+- `routes` 允许一个物理槽共享多个逻辑部位，结果如上节的同槽仲裁；禁用槽即使有 Job 也不输出，仍必须保留在配置中。
+
+## 六类外层 Webhook 示例
+
+以下均为可解析的外层 Webhook JSON；`action` 固定为 `xtoys_game_bridge`，`payload` 是经转义的内层 JSON 字符串。示例标识均为虚构文本，不含 Webhook URL、ID 或 Auth Token。发送时仍须按 [Webhook 官方说明](https://guide.xtoys.app/tools/webhook.html) 在私密位置使用自己的地址和凭据。
+
+### 1. `set_baseline`：建立基线
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"set_baseline\",\"source\":\"manual-demo\",\"sequence\":1,\"targets\":[{\"part\":\"vagina\",\"intensity\":12,\"frequency\":10,\"rotateSpeed\":10,\"rotateDirection\":\"clockwise\",\"rampUpMs\":300,\"rampDownMs\":300}]}"
+}
+```
+
+### 2. `play`：叠加有限事件
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"play\",\"source\":\"manual-demo\",\"eventId\":\"acceptance-event\",\"sequence\":1,\"targets\":[{\"part\":\"vagina\",\"intensity\":20,\"frequency\":25,\"rotateSpeed\":25,\"rotateDirection\":\"clockwise\",\"durationMs\":1000,\"rampUpMs\":100,\"rampDownMs\":200,\"priority\":10}]}"
+}
+```
+
+### 3. `update`：使用更高 sequence 更新并反转旋转方向
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"update\",\"source\":\"manual-demo\",\"eventId\":\"acceptance-event\",\"sequence\":2,\"targets\":[{\"part\":\"vagina\",\"intensity\":30,\"frequency\":30,\"rotateSpeed\":35,\"rotateDirection\":\"counterclockwise\",\"durationMs\":1000,\"rampUpMs\":100,\"rampDownMs\":200,\"priority\":10}]}"
+}
+```
+
+### 4. `stop`：停止指定有限事件
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"stop\",\"source\":\"manual-demo\",\"eventId\":\"acceptance-event\"}"
+}
+```
+
+### 5. `stop_all`：全停但不清除 baseline sequence 栅栏
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"stop_all\",\"source\":\"manual-demo\"}"
+}
+```
+
+`stop_all` 清除所有来源的当前基线和有限事件，并归零已启用槽；但它保留每个 `source` 已接受的 baseline sequence 栅栏。因此不能用先前的 `sequence: 1` 恢复 `manual-demo` 基线，必须发送更高的序号（例如 `sequence: 3`）。这是 XTHB 状态机语义，不是 XToys Webhook 的通用功能。
+
+### 6. `test`：只做协议预览
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"test\",\"source\":\"manual-demo\",\"targets\":[{\"part\":\"clitoris\",\"intensity\":10}]}"
+}
+```
+
+协议 `test` 只预览、不驱动物理输出；它不能替代 `xtoysBridgeTestSlot(slotId, value)` 的真实硬件验收。
+
+## 四阶段人工验收
+
+每一阶段都由在场人员执行。任一步出现异常输出、停止无效、Action 与记录不符或不确定当前槽时，立即停止 Script、断开受影响设备，记录结果并停止后续阶段。不要通过继续增大输出“确认”问题。
+
+### A. 无设备：初始化、调度器和协议预览
+
+- **前置条件**：不连接真实输出；配置已经通过 `XTHB.validateConfig(config)`；16 个输出 Job、Initial Actions、Final Actions 和 `xthb-scheduler` 已保存。
+- **动作**：启动 Script，确认 `xtoysBridgeInit()` 没有配置错误；观察 `xthb-scheduler` 的 0.1 秒循环；发送上方 `test` Webhook。
+- **预期结果**：`test` 仅被解析/记录，不能启动物理输出 Job，设备也未连接；停止 Script 后 Final Actions 执行。
+- **失败即停止**：初始化错误、调度 Job 不循环、`test` 驱动了输出 Job，或无法确认停止动作时停止验收。
+- **记录栏**：日期 ______；Script 修订 ______；初始化日志 ______；调度观察 ______；`test` 结果 ______。
+
+### B. 单槽低输出：真实硬件逐槽核对
+
+- **前置条件**：先在 XToys 把最大值设为使用者认可的低安全范围；一次只连接当前测试槽；当前槽必须 `enabled: true`，且 A 已通过。
+- **动作**：对每个已启用槽单独调用 `xtoysBridgeTestSlot(slotId, value)`，从低值开始。强度槽确认强度；频率槽在同一低输出下确认频率 Action；旋转槽确认速度后分别由协议 `play`/`update` 的显式方向确认顺时针和逆时针。每次确认后调用 `xtoysBridgeTestSlot(slotId, 0)`，最后手动停止 Script。
+- **预期结果**：只有当前连接的槽有真实输出；频率、Rotate 速度和方向与对应 Job 条件一致；Final Actions 将当前设备实际归零。
+- **失败即停止**：非当前槽输出、值无法控制、频率/方向不符、归零失败或停止无法立刻执行时停止。
+- **记录栏**：槽号 ______；低值 ______；强度/频率/速度/方向观察 ______；Final Actions 零值确认 ______；设备 Action JSON ______。
+
+### C. 多槽路由：字段隔离、共享槽、权重与禁用槽
+
+- **前置条件**：B 已完成；仅连接本次要核对的槽；最大值仍保持低安全范围。
+- **动作**：启用槽 01（强度/频率）和槽 03（Rotate），发送含 `intensity`、`frequency`、`rotateSpeed`、`rotateDirection` 的 `play`；确认每槽只消费自己的字段。再分别发送 `clitoris` 与 `vagina` 目标，确认它们通过槽 01 的共享 `routes` 进入同一物理槽的仲裁。调整一个 0–1 路由权重或 `globalMultiplier` 后重新以低值发送，确认有效输出按乘积变化；检查一个 `enabled: false` 槽仍无输出。
+- **预期结果**：强度槽不把 `rotateSpeed` 当输出，旋转槽不把 `intensity` 当速度；共享部位不是相加，而是按上述胜者规则仲裁；权重和全局倍率生效，禁用槽不输出。
+- **失败即停止**：字段串槽、共享槽出现非预期叠加、禁用槽输出、或权重变化与记录不符时停止。
+- **记录栏**：槽 01 观察 ______；槽 03 观察 ______；共享路由胜者 ______；权重/倍率 ______；禁用槽确认 ______。
+
+### D. 完整协议：到期恢复与 sequence 栅栏
+
+- **前置条件**：C 已完成；仅连接当前验收槽；最大值保持低安全范围；每步都记录实际 Job/设备反馈再进入下一步。
+- **动作**：严格按此顺序发送：`set_baseline`（sequence 1）→ `play`（事件 sequence 1）→ 更高 sequence 的 `update`（2）→ 等待事件到期并调用调度 tick → 空 `set_baseline`（使用更高 sequence，例如 2）→ `stop_all` → 用更高 baseline sequence（例如 3）恢复基线 → 手动停止 Script。必要时使用 `stop` 示例单独验证事件移除。
+- **预期结果**：`update` 替换旧事件并反转所发方向；事件到期后恢复到当时基线；空 baseline 只清除该来源基线；`stop_all` 归零但保留 sequence 栅栏；旧 baseline sequence 被忽略，更高 sequence 可恢复；手动停止后 Final Actions 再次实际归零。
+- **失败即停止**：到期不恢复、空 baseline 停止了不应停止的事件、`stop_all` 后旧序号仍恢复、较高序号无法恢复，或 Final Actions 未归零时停止。
+- **记录栏**：基线 ______；play/update ______；到期恢复 ______；空 baseline ______；stop_all ______；更高序号恢复 ______；手动停止 ______。
+
+## 故障排查：先平台、再契约、再记录 Action JSON
+
+每项依次做三件事：先依据 [XToys 官方 Script/Action/Trigger/Job 定义](https://guide.xtoys.app/script-creation/definitions.html) 与 [Webhook 说明](https://guide.xtoys.app/tools/webhook.html) 检查平台层连接、保存、Trigger/Job/变量；再核对 XTHB 固定名称、配置和协议；最后从当前 XToys 的 Action 选择器导出/抄录实际设备 Action JSON 到记录栏。设备菜单、字段名称和 JSON 结构均为 **当前界面核对**，不得猜测。
+
+| 症状 | 先检查 XToys 平台层 | 再检查 XTHB 固定契约 | 最后记录当前设备 Action JSON |
+| --- | --- | --- | --- |
+| 配置 JSON 无效 | Variable Action 是否保存了完整字符串、Script 是否重新启动 | 五组、连续 16 槽、`logLevel`、权重和 `XTHB.validateConfig(config)` 的错误码 | 槽号 ______；JSON ______ |
+| Webhook 到达但 Trigger 不运行 | Webhook Block、Global Trigger、外层 `action` 筛选和保存状态 | `action` 必为 `xtoys_game_bridge`；只传完整 `payload` 给 `xtoysBridgeHandle(payload)` | Trigger 输入/Action ______ |
+| Job 名或变量名拼错 | Job 是否存在并连接了正确 Block | `xthb-scheduler`、`xthb-output-NN` 与五个 `xthb-slot-NN-*` 名必须逐字一致 | Job/变量/Action ______ |
+| E-Stim 频率无变化 | 当前设备 Block 是否提供频率 Action，字段是否使用表达式 | 槽为 `intensity` 且 `frequencyEnabled: true`；频率取 `{xthb-slot-NN-frequency}` | 频率 Action ______ |
+| Rotate 方向错误 | 当前 Action 的顺/逆方向选项和条件是否保存 | `direction-code` 为 `1` 顺时针、`-1` 逆时针；目标必须显式 `rotateDirection` | 两个方向 Action ______ |
+| 事件到期不回 baseline | `xthb-scheduler` 是否运行且 0.1 秒 Trigger 回到 START | `durationMs` 为正；`xtoysBridgeTick()` 调度；检查 baseline 与 ramp 字段 | 调度/输出 Action ______ |
+| 重复 sequence 被忽略 | Webhook 是否真的把新 payload 交给 Script | 同一 `source + eventId` 的 play/update 必须严格递增 sequence | 收到的 payload/Action ______ |
+| `stop_all` 后旧 baseline sequence 无法恢复 | 全停 Action/Job 是否被人工重复停止 | 这是预期栅栏：用大于该 source 已接受 baseline sequence 的 `set_baseline` | 全停/恢复 Action ______ |
+| Final Actions 未归零 | Stop Actions 是否保存、设备 Block 是否仍连接 | 顺序为 `xtoysBridgeStopAll()`、停止调度器、显式设备零值、必要时停输出 Job | Final Actions ______ |
+| Reload 后旧槽仍输出 | Reload 后是否仍有旧 Job/Queue 或持续设备 Action | 修改 `xthb-config-json` 后调用 `xtoysBridgeReloadConfig()`；旧槽应禁用并执行 Final Actions 归零 | Reload 前后 Action ______ |
+
+## 人工验收记录
+
+真实硬件是否通过只能由在场人员填写，本文不声明设备已通过。保留此表和当前 Action JSON，便于下次更换 XToys 版本或设备后重新核对。
+
+| 项目 | 填写栏 |
+| --- | --- |
+| 操作人员 / 日期 | ______ |
+| XToys 版本 / Script 修订 | ______ |
+| 设备最大值低安全范围确认 | ______ |
+| A 无设备 | 通过 / 停止；记录 ______ |
+| B 单槽低输出 | 通过 / 停止；记录 ______ |
+| C 多槽路由 | 通过 / 停止；记录 ______ |
+| D 完整协议 | 通过 / 停止；记录 ______ |
+| 异常、断开或恢复操作 | ______ |
+| 当前设备 Action JSON 存放位置（私密） | ______ |

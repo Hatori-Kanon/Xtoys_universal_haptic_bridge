@@ -4,12 +4,23 @@ var assert = require('node:assert/strict');
 var fs = require('node:fs');
 var path = require('node:path');
 var test = require('node:test');
+var runtimeHarness = require('./harness');
 
 var repositoryRoot = path.resolve(__dirname, '..', '..');
 var manualPath = path.join(repositoryRoot, 'docs', 'xtoys-complete-setup-guide.zh-CN.md');
 
 function readManual() {
   return fs.readFileSync(manualPath, 'utf8');
+}
+
+function jsonBlocks(markdown) {
+  var blocks = [];
+  var pattern = /```json\s*([\s\S]*?)```/g;
+  var match;
+  while ((match = pattern.exec(markdown)) !== null) {
+    blocks.push(JSON.parse(match[1]));
+  }
+  return blocks;
 }
 
 test('Chinese manual cites the required official XToys sources and separates provenance', function () {
@@ -80,4 +91,44 @@ test('manual distinguishes preview from physical output and states lifecycle bou
   assert.match(manual, /`xtoysBridgeTestSlot\(\)`[^\n]*真实|真实[^\n]*`xtoysBridgeTestSlot\(\)`/);
   assert.match(manual, /不[^\n]*修改[^\n]*最大强度/);
   assert.match(manual, /不[^\n]*检测[^\n]*游戏进程/);
+});
+
+test('all manual JSON examples parse and include a valid 16-slot config', function () {
+  var blocks = jsonBlocks(readManual());
+  var runtime = runtimeHarness.loadRuntime();
+  var configs = blocks.filter(function (value) {
+    return value && value.groups && value.slots;
+  });
+
+  assert.ok(blocks.length >= 7);
+  assert.equal(configs.length, 1);
+  assert.equal(configs[0].slots.length, 16);
+  assert.equal(runtime.XTHB.validateConfig(configs[0]).ok, true);
+});
+
+test('every webhook envelope contains parseable protocol v1 payload', function () {
+  var envelopes = jsonBlocks(readManual()).filter(function (value) {
+    return value && value.action === 'xtoys_game_bridge';
+  });
+  assert.ok(envelopes.length >= 6);
+  envelopes.forEach(function (envelope) {
+    var payload = JSON.parse(envelope.payload);
+    assert.equal(payload.protocolVersion, 1);
+    assert.equal(typeof payload.command, 'string');
+    assert.equal(typeof payload.source, 'string');
+  });
+});
+
+test('relative Markdown links in the manual resolve inside the repository', function () {
+  var manual = readManual();
+  var pattern = /\[[^\]]+\]\(([^)]+)\)/g;
+  var match;
+  var target;
+  while ((match = pattern.exec(manual)) !== null) {
+    target = match[1].split('#')[0];
+    if (target === '' || /^[a-z]+:/i.test(target)) {
+      continue;
+    }
+    assert.equal(fs.existsSync(path.resolve(path.dirname(manualPath), target)), true, target);
+  }
 });
