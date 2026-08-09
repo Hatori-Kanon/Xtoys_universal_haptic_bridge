@@ -23,6 +23,25 @@ function jsonBlocks(markdown) {
   return blocks;
 }
 
+function quickStartSection(markdown) {
+  var match = /^## Quick start\r?\n([\s\S]*?)(?=^## [^\r\n]+|(?![\s\S]))/m.exec(markdown);
+  assert.notEqual(match, null, 'README must contain a Quick start section');
+  return match[1];
+}
+
+function assertCompleteChineseManualEntrypoints(readme, quickReference) {
+  var firstConfigHeading = /^## /m.exec(quickReference);
+  var preamble;
+  assert.notEqual(firstConfigHeading, null, 'quick reference must contain its first configuration section');
+  preamble = quickReference.slice(0, firstConfigHeading.index);
+  assert.match(
+    quickStartSection(readme),
+    /\[[^\]]+\]\(docs\/xtoys-complete-setup-guide\.zh-CN\.md\)/
+  );
+  assert.match(preamble, /\[[^\]]+\]\(xtoys-complete-setup-guide\.zh-CN\.md\)/);
+  assert.match(preamble, /第一次配置|初次配置/);
+}
+
 test('Chinese manual cites the required official XToys sources and separates provenance', function () {
   var manual = readManual();
   var officialUrls = [
@@ -159,12 +178,32 @@ test('relative Markdown links in the manual resolve inside the repository', func
   }
 });
 
-test('README and quick reference link to the complete Chinese manual', function () {
+test('README Quick start and quick reference preamble link new users to the complete Chinese manual', function () {
   var readme = fs.readFileSync(path.join(repositoryRoot, 'README.md'), 'utf8');
   var quickReference = fs.readFileSync(
     path.join(repositoryRoot, 'docs', 'xtoys-template-setup.md'),
     'utf8'
   );
-  assert.match(readme, /docs\/xtoys-complete-setup-guide\.zh-CN\.md/);
-  assert.match(quickReference, /xtoys-complete-setup-guide\.zh-CN\.md/);
+
+  assertCompleteChineseManualEntrypoints(readme, quickReference);
+});
+
+test('complete-manual entrypoint validation rejects bare paths and missing first-time guidance', function () {
+  var readme = fs.readFileSync(path.join(repositoryRoot, 'README.md'), 'utf8');
+  var quickReference = fs.readFileSync(
+    path.join(repositoryRoot, 'docs', 'xtoys-template-setup.md'),
+    'utf8'
+  );
+  var barePathReadme = readme.replace(
+    /\[[^\]]+\]\(docs\/xtoys-complete-setup-guide\.zh-CN\.md\)/,
+    'docs/xtoys-complete-setup-guide.zh-CN.md'
+  );
+  var quickReferenceWithoutFirstTimeCue = quickReference.replace('第一次配置', '熟悉配置');
+
+  assert.throws(function () {
+    assertCompleteChineseManualEntrypoints(barePathReadme, quickReference);
+  }, assert.AssertionError);
+  assert.throws(function () {
+    assertCompleteChineseManualEntrypoints(readme, quickReferenceWithoutFirstTimeCue);
+  }, assert.AssertionError);
 });
