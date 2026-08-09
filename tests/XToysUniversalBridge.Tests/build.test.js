@@ -94,11 +94,43 @@ test('global entry remains ES5-only and cannot call forbidden direct hardware ac
   assert.doesNotMatch(source, /\b(let|const|class|async|await)\b|=>/);
 });
 
-test('release distribution excludes forbidden hardware aliases and non-ES5 syntax', function () {
-  var source = buildRuntime();
-  assert.equal(runtimeHarness.distributionMatchesSources(source), true);
-  assert.doesNotMatch(source,
+test('committed release artifact matches sources and remains unchanged after rebuilding', function () {
+  var committed = childProcess.execFileSync(
+    'git',
+    ['show', 'HEAD:dist/xtoys-universal-runtime.es5.js'],
+    { cwd: repositoryRoot, encoding: 'utf8' }
+  );
+  var expected = runtimeHarness.expectedDistribution();
+  var context = vm.createContext({
+    getVariable: function () {},
+    setVariable: function () {},
+    callAction: function () {},
+    console: { log: function () {} }
+  });
+  var names = [
+    'xtoysBridgeInit',
+    'xtoysBridgeHandle',
+    'xtoysBridgeTick',
+    'xtoysBridgeStopAll',
+    'xtoysBridgeReloadConfig',
+    'xtoysBridgeTestSlot'
+  ];
+
+  assert.equal(committed, expected);
+  assert.doesNotMatch(committed,
     /setMax|eval\(|Function\(|rotateReverse|setPattern|=>|\b(let|const|class|async|await)\b/);
+  vm.runInContext(committed, context, { filename: 'HEAD:dist/xtoys-universal-runtime.es5.js' });
+  assert.equal(context.XTHB.MODULE_GLOBAL_ENTRY, true);
+  names.forEach(function (name) {
+    assert.equal(typeof context[name], 'function', name);
+  });
+
+  buildRuntime();
+  childProcess.execFileSync(
+    'git',
+    ['diff', '--exit-code', '--', 'dist/xtoys-universal-runtime.es5.js'],
+    { cwd: repositoryRoot, encoding: 'utf8' }
+  );
 });
 
 test('concurrent builders never expose a truncated distribution to readers', { timeout: 30000 }, function () {

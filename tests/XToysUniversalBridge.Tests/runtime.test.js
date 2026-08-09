@@ -124,6 +124,19 @@ function assertPublicStep(loaded, actionStart, expectedSlots) {
   });
 }
 
+function sendWebhook(loaded, command, values, outerAction) {
+  var inner = JSON.parse(payload(command, values));
+  var wireText = JSON.stringify({
+    action: outerAction === undefined ? 'xtoys_game_bridge' : outerAction,
+    payload: JSON.stringify(inner)
+  });
+  var received = JSON.parse(wireText);
+  if (received.action !== 'xtoys_game_bridge') {
+    return null;
+  }
+  return loaded.context.xtoysBridgeHandle(received.payload);
+}
+
 test('play dispatches immediately through the adapter with a rising ramp', function () {
   var subject = createSubject(1000);
   var result = subject.runtime.handle(payload('play', {
@@ -560,7 +573,7 @@ test('built public globals preserve the complete baseline attack stop expiry and
   ]);
 
   actionStart = loaded.actions.length;
-  assert.equal(loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+  assert.equal(sendWebhook(loaded, 'set_baseline', {
     source: 'acceptance',
     sequence: 1,
     targets: [
@@ -571,7 +584,7 @@ test('built public globals preserve the complete baseline attack stop expiry and
         rotateSpeed: 20, rotateDirection: 'clockwise', rampUpMs: 500, rampDownMs: 700
       })
     ]
-  })), 1);
+  }), 1);
   assertPublicStep(loaded, actionStart, [
     { value: 10, frequency: 11, rampSeconds: 1, directionCode: 0, generation: 2 },
     { value: 5, frequency: 0, rampSeconds: 1, directionCode: 0, generation: 2 },
@@ -580,7 +593,7 @@ test('built public globals preserve the complete baseline attack stop expiry and
 
   loaded.setNow(100);
   actionStart = loaded.actions.length;
-  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+  assert.equal(sendWebhook(loaded, 'play', {
     source: 'acceptance',
     eventId: 'clitoris-attack',
     sequence: 1,
@@ -588,7 +601,7 @@ test('built public globals preserve the complete baseline attack stop expiry and
       intensity: 80, frequency: 70, durationMs: 500,
       rampUpMs: 200, rampDownMs: 400, priority: 10
     })]
-  })), 1);
+  }), 1);
   assertPublicStep(loaded, actionStart, [
     { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0, generation: 3 },
     { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 3 },
@@ -597,7 +610,7 @@ test('built public globals preserve the complete baseline attack stop expiry and
 
   loaded.setNow(120);
   actionStart = loaded.actions.length;
-  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+  assert.equal(sendWebhook(loaded, 'play', {
     source: 'acceptance',
     eventId: 'vagina-attack',
     sequence: 1,
@@ -605,7 +618,7 @@ test('built public globals preserve the complete baseline attack stop expiry and
       rotateSpeed: 60, rotateDirection: 'clockwise', durationMs: 800,
       rampUpMs: 300, rampDownMs: 600, priority: 20
     })]
-  })), 1);
+  }), 1);
   assertPublicStep(loaded, actionStart, [
     { value: 46, frequency: 70, rampSeconds: 0, directionCode: 0, generation: 4 },
     { value: 24, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 4 },
@@ -614,7 +627,7 @@ test('built public globals preserve the complete baseline attack stop expiry and
 
   loaded.setNow(150);
   actionStart = loaded.actions.length;
-  assert.equal(loaded.context.xtoysBridgeHandle(payload('update', {
+  assert.equal(sendWebhook(loaded, 'update', {
     source: 'acceptance',
     eventId: 'vagina-attack',
     sequence: 2,
@@ -622,7 +635,7 @@ test('built public globals preserve the complete baseline attack stop expiry and
       rotateSpeed: 80, rotateDirection: 'counterclockwise', durationMs: 800,
       rampUpMs: 100, rampDownMs: 500, priority: 20
     })]
-  })), 1);
+  }), 1);
   assertPublicStep(loaded, actionStart, [
     { value: 46, frequency: 70, rampSeconds: 0, directionCode: 0, generation: 5 },
     { value: 24, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 5 },
@@ -631,11 +644,11 @@ test('built public globals preserve the complete baseline attack stop expiry and
 
   loaded.setNow(200);
   actionStart = loaded.actions.length;
-  assert.equal(loaded.context.xtoysBridgeHandle(payload('stop', {
+  assert.equal(sendWebhook(loaded, 'stop', {
     source: 'acceptance',
     eventId: 'clitoris-attack',
     targets: [target('clitoris')]
-  })), 1);
+  }), 1);
   assertPublicStep(loaded, actionStart, [
     { value: 10, frequency: 11, rampSeconds: 0.4, directionCode: 0, generation: 6 },
     { value: 5, frequency: 0, rampSeconds: 0.4, directionCode: 0, generation: 6 },
@@ -661,9 +674,9 @@ test('built public globals preserve the complete baseline attack stop expiry and
 
   loaded.setNow(1000);
   actionStart = loaded.actions.length;
-  assert.equal(loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+  assert.equal(sendWebhook(loaded, 'set_baseline', {
     source: 'acceptance', sequence: 2, targets: []
-  })), 1);
+  }), 1);
   assertPublicStep(loaded, actionStart, [
     { value: 0, frequency: 0, rampSeconds: 2, directionCode: 0, generation: 8 },
     { value: 0, frequency: 0, rampSeconds: 2, directionCode: 0, generation: 8 },
@@ -671,14 +684,28 @@ test('built public globals preserve the complete baseline attack stop expiry and
   ]);
 
   actionStart = loaded.actions.length;
-  assert.equal(loaded.context.xtoysBridgeHandle(payload('stop_all', {
+  assert.equal(sendWebhook(loaded, 'stop_all', {
     source: 'acceptance'
-  })), 1);
+  }), 1);
   assertPublicStep(loaded, actionStart, [
     { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 },
     { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 },
     { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 }
   ]);
+});
+
+test('simulated webhook trigger ignores an outer action other than the documented exact filter', function () {
+  var loaded = publicSubject();
+  var calls = 0;
+  loaded.context.xtoysBridgeHandle = function () {
+    calls += 1;
+    return 1;
+  };
+
+  assert.equal(sendWebhook(loaded, 'stop_all', {
+    source: 'acceptance-wrong-action'
+  }, 'XToys_Game_Bridge'), null);
+  assert.equal(calls, 0);
 });
 
 test('built public handler rejects malformed and oversized payloads without output', function () {

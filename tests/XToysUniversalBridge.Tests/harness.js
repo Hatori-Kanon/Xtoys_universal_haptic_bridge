@@ -90,6 +90,7 @@ function loadRuntime(options) {
 
 module.exports = {
   distributionMatchesSources: distributionMatchesSources,
+  expectedDistribution: expectedDistribution,
   loadRuntime: loadRuntime,
   readDistribution: readDistribution
 };
