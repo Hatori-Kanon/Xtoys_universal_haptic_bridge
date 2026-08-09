@@ -1,0 +1,125 @@
+'use strict';
+
+var fs = require('node:fs');
+var path = require('node:path');
+var vm = require('node:vm');
+
+var repositoryRoot = path.resolve(__dirname, '..');
+var distributionFile = path.join(repositoryRoot, 'dist', 'xtoys-universal-runtime.es5.js');
+var configFile = path.join(repositoryRoot, 'tests', 'XToysUniversalBridge.Tests', 'fixtures', 'config.json');
+
+function loadNamespace() {
+  var context = vm.createContext({ console: console });
+  var source = fs.readFileSync(distributionFile, 'utf8');
+  vm.runInContext(source, context, { filename: distributionFile });
+  return context.XTHB;
+}
+
+function loadConfig() {
+  return JSON.parse(fs.readFileSync(configFile, 'utf8'));
+}
+
+function createRuntime(namespace, config) {
+  return namespace.createRuntime(config, {
+    applySlot: function () {}
+  }, function () { return 0; });
+}
+
+function target() {
+  return {
+    part: 'clitoris',
+    intensity: 40,
+    durationMs: 600000
+  };
+}
+
+function payload(command, eventId, sequence) {
+  return JSON.stringify({
+    protocolVersion: 1,
+    command: command,
+    source: 'benchmark',
+    eventId: eventId,
+    sequence: sequence,
+    targets: [target()]
+  });
+}
+
+function milliseconds(started) {
+  return Number(process.hrtime.bigint() - started) / 1000000;
+}
+
+function benchmarkSameEvent(namespace, config, updates) {
+  var runtime = createRuntime(namespace, config);
+  var index;
+  var started;
+  runtime.handle(payload('play', 'same-event', 0));
+  started = process.hrtime.bigint();
+  for (index = 1; index <= updates; index += 1) {
+    runtime.handle(payload('update', 'same-event', index));
+  }
+  return { updates: updates, milliseconds: milliseconds(started) };
+}
+
+function benchmarkUniqueEvents(namespace, config, requested) {
+  var runtime = createRuntime(namespace, config);
+  var accepted = 0;
+  var rejected = 0;
+  var index;
+  var result;
+  var started = process.hrtime.bigint();
+  for (index = 0; index < requested; index += 1) {
+    result = runtime.handle(payload('play', 'unique-' + index, 1));
+    if (result.ok) {
+      accepted += 1;
+    } else {
+      rejected += 1;
+    }
+  }
+  return {
+    requested: requested,
+    accepted: accepted,
+    rejected: rejected,
+    milliseconds: milliseconds(started)
+  };
+}
+
+function benchmarkTicks(namespace, config, activeEvents, iterations) {
+  var runtime = createRuntime(namespace, config);
+  var index;
+  var started;
+  for (index = 0; index < activeEvents; index += 1) {
+    runtime.handle(payload('play', 'tick-' + index, 1));
+  }
+  started = process.hrtime.bigint();
+  for (index = 0; index < iterations; index += 1) {
+    runtime.tick();
+  }
+  return {
+    activeEvents: activeEvents,
+    iterations: iterations,
+    milliseconds: milliseconds(started)
+  };
+}
+
+function main() {
+  var testMode = process.argv.indexOf('--test') !== -1;
+  var namespace = loadNamespace();
+  var config = loadConfig();
+  var uniqueCounts = [32, 64, 128, 129];
+  var output = {
+    nodeVersion: process.version,
+    sameEvent: benchmarkSameEvent(namespace, config, testMode ? 20 : 2000),
+    uniqueEvents: uniqueCounts.map(function (count) {
+      return benchmarkUniqueEvents(namespace, config, count);
+    }),
+    ticks: benchmarkTicks(namespace, config, testMode ? 32 : 128, testMode ? 10 : 1000)
+  };
+  process.stdout.write(JSON.stringify(output) + '\n');
+}
+
+try {
+  main();
+} catch (error) {
+  process.stderr.write((error && error.stack ? error.stack : String(error)) + '\n');
+  process.exitCode = 1;
+}
