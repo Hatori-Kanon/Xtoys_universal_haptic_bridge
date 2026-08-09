@@ -158,3 +158,13 @@ test('relative Markdown links in the manual resolve inside the repository', func
     assert.equal(fs.existsSync(path.resolve(path.dirname(manualPath), target)), true, target);
   }
 });
+
+test('README and quick reference link to the complete Chinese manual', function () {
+  var readme = fs.readFileSync(path.join(repositoryRoot, 'README.md'), 'utf8');
+  var quickReference = fs.readFileSync(
+    path.join(repositoryRoot, 'docs', 'xtoys-template-setup.md'),
+    'utf8'
+  );
+  assert.match(readme, /docs\/xtoys-complete-setup-guide\.zh-CN\.md/);
+  assert.match(quickReference, /xtoys-complete-setup-guide\.zh-CN\.md/);
+});

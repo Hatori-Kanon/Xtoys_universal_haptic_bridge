@@ -1,5 +1,7 @@
 # 一次性 XToys 通用模板配置
 
+> **第一次配置 XToys 时，请先阅读[完整中文设置手册](xtoys-complete-setup-guide.zh-CN.md)。** 本文是熟悉 XToys 后使用的技术速查。
+
 本模板只需为每个 XToys Script 配置一次。游戏 Bridge 之后只发送 [协议 v1](xtoys-protocol-v1.md) 的 Webhook，不需要知道 XToys 设备、通道或 Job 名称。
 
 ## 0. 粘贴运行时与配置变量

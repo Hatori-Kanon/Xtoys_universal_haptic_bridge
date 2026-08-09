@@ -19,7 +19,7 @@ See the [approved universal bridge specification](docs/superpowers/specs/2026-08
 ## Quick start
 
 1. Build the runtime and paste `dist/xtoys-universal-runtime.es5.js` into one XToys Script global JavaScript page.
-2. Follow the Chinese-friendly [one-time XToys template setup guide](docs/xtoys-template-setup.md) to configure `xthb-config-json`, the single Webhook Global Trigger, scheduler, output Jobs, and zero-output safety actions.
+2. For first-time XToys configuration, follow the complete Chinese [XToys and XTHB setup manual](docs/xtoys-complete-setup-guide.zh-CN.md). After you are familiar with XToys, use the [one-time XToys template setup guide](docs/xtoys-template-setup.md) as a technical quick reference for `xthb-config-json`, the single Webhook Global Trigger, scheduler, output Jobs, and zero-output safety actions.
 3. Have each game Bridge send the escaped outer Webhook payloads defined in the [protocol v1 guide](docs/xtoys-protocol-v1.md). The game must not name XToys devices or Jobs.
 
 The template is manually started and stopped by the user. It controls current output only; it never changes a device's maximum intensity or maximum rotation speed.
