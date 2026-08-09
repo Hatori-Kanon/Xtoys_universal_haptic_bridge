@@ -1269,16 +1269,15 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     };
   }
 
-  function sameCore(left, right) {
+  function sameActuator(left, right) {
     return left !== undefined &&
       left.value === right.value &&
       left.frequency === right.frequency &&
-      left.direction === right.direction &&
-      left.generation === right.generation;
+      left.direction === right.direction;
   }
 
   function sameTuple(left, right) {
-    return sameCore(left, right) && left.rampSeconds === right.rampSeconds;
+    return sameActuator(left, right) && left.rampSeconds === right.rampSeconds;
   }
 
   function containsPart(parts, part) {
@@ -1308,7 +1307,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var milliseconds = 0;
     var currentCore = coreTuple(current);
 
-    if (sameCore(previousTuple, currentCore)) {
+    if (sameActuator(previousTuple, currentCore)) {
       return previousTuple.rampSeconds;
     }
     if (expiryReleased(previous, current, expiredParts)) {
@@ -1349,6 +1348,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var failure;
       tuple.rampSeconds = transition.rampSeconds;
       if (!force && pendingDispatches[slot.id] === undefined && sameTuple(lastTuples[slot.id], tuple)) {
+        lastSlots[slot.id] = copy(slot);
         return { changed: false, failure: null };
       }
       if (generationFloors[slot.id] === undefined) {
@@ -1357,6 +1357,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         physicalSlot.generation = Math.max(physicalSlot.generation, generationFloors[slot.id] + 1);
         generationFloors[slot.id] = physicalSlot.generation;
       }
+      tuple.generation = physicalSlot.generation;
       try {
         outputAdapter.applySlot(physicalSlot, copy(transition));
       } catch (error) {
@@ -1379,7 +1380,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
     function transitionFor(slot, expiredParts) {
       var pending = pendingDispatches[slot.id];
-      if (pending !== undefined && sameCore(pending.tuple, coreTuple(slot))) {
+      if (pending !== undefined && sameActuator(pending.tuple, coreTuple(slot))) {
         return copy(pending.transition);
       }
       return {

@@ -209,7 +209,7 @@ test('adapter apply failures are isolated and retry on tick without changing han
     sequence: 1,
     targets: [{ part: 'clitoris', intensity: 80, durationMs: 1000 }]
   })), 1);
-  assert.deepEqual(enabledJobNames(calls), ['xthb-output-01', 'xthb-output-02', 'xthb-output-03']);
+  assert.deepEqual(enabledJobNames(calls), ['xthb-output-01', 'xthb-output-02']);
   calls.length = 0;
   assert.equal(loaded.context.xtoysBridgeTick(), 1);
   assert.deepEqual(enabledJobNames(calls), ['xthb-output-02']);
@@ -310,7 +310,7 @@ test('reload rejects bad configuration atomically and safely zeros outputs remov
     targets: [{ part: 'clitoris', intensity: 60 }]
   })), 1);
   assert.deepEqual(enabledJobNames(loaded.actions), [
-    'xthb-output-01', 'xthb-output-02', 'xthb-output-03'
+    'xthb-output-01', 'xthb-output-02'
   ]);
 
   nextConfig = fixtureConfig();
@@ -356,7 +356,7 @@ test('reload keeps the old runtime when an output removed by the new config cann
     targets: [{ part: 'clitoris', intensity: 80 }]
   })), 1);
   assert.deepEqual(enabledJobNames(calls), [
-    'xthb-output-01', 'xthb-output-02', 'xthb-output-03'
+    'xthb-output-01', 'xthb-output-02'
   ]);
 });
 

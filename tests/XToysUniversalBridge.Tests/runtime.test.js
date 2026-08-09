@@ -110,15 +110,15 @@ function slotVariables(loaded, slotId) {
   };
 }
 
-function expectedJobActions() {
-  return [1, 2, 3].map(function (slotId) {
+function expectedJobActions(slotIds) {
+  return (slotIds || [1, 2, 3]).map(function (slotId) {
     var suffix = '0' + slotId;
     return { type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' };
   });
 }
 
-function assertPublicStep(loaded, actionStart, expectedSlots) {
-  assert.deepEqual(copy(loaded.actions.slice(actionStart)), expectedJobActions());
+function assertPublicStep(loaded, actionStart, expectedSlots, actionSlotIds) {
+  assert.deepEqual(copy(loaded.actions.slice(actionStart)), expectedJobActions(actionSlotIds));
   [1, 2, 3].forEach(function (slotId) {
     assert.deepEqual(slotVariables(loaded, slotId), expectedSlots[slotId - 1]);
   });
@@ -438,7 +438,7 @@ test('invalid messages are atomic and never change or increase output', function
   assert.equal(lastCall(subject, 1).slot.value, 10);
 });
 
-test('tuple comparison includes generation and suppresses an identical tick with null and zero fields', function () {
+test('physical tuple comparison ignores logical generation and retains latest expiry metadata', function () {
   var subject = createSubject(0);
   var firstCall;
   var callsAfterPlay;
@@ -447,7 +447,8 @@ test('tuple comparison includes generation and suppresses an identical tick with
     eventId: 'tuple',
     sequence: 1,
     targets: [target('clitoris', {
-      intensity: 80, frequency: 0, durationMs: 1000, rampUpMs: 700000
+      intensity: 80, frequency: 0, durationMs: 1000,
+      rampUpMs: 700000, rampDownMs: 100
     })]
   }));
   firstCall = lastCall(subject, 1);
@@ -463,13 +464,20 @@ test('tuple comparison includes generation and suppresses an identical tick with
     eventId: 'tuple',
     sequence: 2,
     targets: [target('clitoris', {
-      intensity: 80, frequency: 0, durationMs: 1000, rampUpMs: 700000
+      intensity: 80, frequency: 0, durationMs: 200,
+      rampUpMs: 700000, rampDownMs: 700
     })]
   }));
-  assert.equal(callsFor(subject, 1).length, callsAfterPlay + 1);
-  assert.equal(lastCall(subject, 1).slot.generation, 2);
+  assert.equal(callsFor(subject, 1).length, callsAfterPlay);
+  assert.equal(subject.runtime.snapshot().generation, 2);
   assert.equal(firstCall.slot.generation, 1);
   assert.equal(firstCall.transition.rampSeconds, 600);
+
+  subject.loaded.setNow(200);
+  subject.runtime.tick();
+  assert.equal(callsFor(subject, 1).length, callsAfterPlay + 1);
+  assert.equal(lastCall(subject, 1).slot.value, 0);
+  assert.equal(lastCall(subject, 1).transition.rampSeconds, 0.7);
 });
 
 test('stopAll clears state and dispatches zero-ramp snapshots to every enabled slot', function () {
@@ -710,8 +718,8 @@ test('built public globals preserve the complete baseline attack stop expiry and
   assertPublicStep(loaded, actionStart, [
     { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0, generation: 3 },
     { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 3 },
-    { value: 10, frequency: 0, rampSeconds: 0, directionCode: 1, generation: 3 }
-  ]);
+    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1, generation: 2 }
+  ], [1, 2]);
 
   loaded.setNow(120);
   actionStart = loaded.actions.length;
@@ -725,10 +733,10 @@ test('built public globals preserve the complete baseline attack stop expiry and
     })]
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 46, frequency: 70, rampSeconds: 0, directionCode: 0, generation: 4 },
-    { value: 24, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 4 },
+    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0, generation: 3 },
+    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 3 },
     { value: 37, frequency: 0, rampSeconds: 0.3, directionCode: 1, generation: 4 }
-  ]);
+  ], [3]);
 
   loaded.setNow(150);
   actionStart = loaded.actions.length;
@@ -742,10 +750,10 @@ test('built public globals preserve the complete baseline attack stop expiry and
     })]
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 46, frequency: 70, rampSeconds: 0, directionCode: 0, generation: 5 },
-    { value: 24, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 5 },
+    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0, generation: 3 },
+    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 3 },
     { value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1, generation: 5 }
-  ]);
+  ], [3]);
 
   loaded.setNow(200);
   actionStart = loaded.actions.length;
@@ -757,25 +765,25 @@ test('built public globals preserve the complete baseline attack stop expiry and
   assertPublicStep(loaded, actionStart, [
     { value: 10, frequency: 11, rampSeconds: 0.4, directionCode: 0, generation: 6 },
     { value: 5, frequency: 0, rampSeconds: 0.4, directionCode: 0, generation: 6 },
-    { value: 46, frequency: 0, rampSeconds: 0, directionCode: -1, generation: 6 }
-  ]);
+    { value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1, generation: 5 }
+  ], [1, 2]);
 
   loaded.setNow(949);
   actionStart = loaded.actions.length;
   assert.equal(loaded.context.xtoysBridgeTick(), 0);
   assert.deepEqual(loaded.actions.slice(actionStart), []);
   assert.deepEqual(slotVariables(loaded, 3), {
-    value: 46, frequency: 0, rampSeconds: 0, directionCode: -1, generation: 6
+    value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1, generation: 5
   });
 
   loaded.setNow(950);
   actionStart = loaded.actions.length;
-  assert.equal(loaded.context.xtoysBridgeTick(), 3);
+  assert.equal(loaded.context.xtoysBridgeTick(), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 10, frequency: 11, rampSeconds: 0, directionCode: 0, generation: 7 },
-    { value: 5, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 7 },
+    { value: 10, frequency: 11, rampSeconds: 0.4, directionCode: 0, generation: 6 },
+    { value: 5, frequency: 0, rampSeconds: 0.4, directionCode: 0, generation: 6 },
     { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1, generation: 7 }
-  ]);
+  ], [3]);
 
   loaded.setNow(1000);
   actionStart = loaded.actions.length;
@@ -865,8 +873,10 @@ test('built public handler processes 500 timed update commands with deterministi
     })), 1);
   }
 
-  assert.equal(loaded.actions.length, 1503);
-  assert.deepEqual(copy(loaded.actions.slice(-3)), expectedJobActions());
+  assert.equal(loaded.actions.length, 1000);
+  assert.equal(loaded.actions.some(function (action) {
+    return action.job === 'xthb-output-03';
+  }), false);
   assert.deepEqual(slotVariables(loaded, 1), {
     value: 40, frequency: 55, rampSeconds: 0.2, directionCode: 0, generation: 502
   });
@@ -874,9 +884,9 @@ test('built public handler processes 500 timed update commands with deterministi
     value: 20, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 502
   });
   assert.deepEqual(slotVariables(loaded, 3), {
-    value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 502
+    value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 1
   });
-  assert.equal(loaded.logs.length, 15);
+  assert.equal(loaded.logs.length, 10);
   loaded.logs.forEach(function (entry) {
     assert.equal(entry, 'XTHB debug: 100 successful slot updates.');
   });
