@@ -20,6 +20,12 @@
   }
 
   function hasActuator(target, type) {
+    if (type === 'rotation' && target.hasRotateSpeed === false) {
+      return false;
+    }
+    if (type === 'intensity' && target.hasIntensity === false) {
+      return false;
+    }
     return typeof targetValue(target, type) === 'number' && isFinite(targetValue(target, type));
   }
 
@@ -38,10 +44,10 @@
     return parts;
   }
 
-  function contributionIdentity(entry, kind, targetIndex, leafPart) {
+  function contributionIdentity(entry, kind, leafPart) {
     var eventId = entry.eventId === undefined || entry.eventId === null ? '' : entry.eventId;
     return kind + '\u001f' + (entry.source || '') + '\u001f' + eventId + '\u001f' +
-      targetIndex + '\u001f' + leafPart;
+      entry.target.part + '\u001f' + leafPart;
   }
 
   function candidate(entry, type, routeWeight, groupWeight, multiplier, identity) {
@@ -120,7 +126,6 @@
     var eventLists = ownValues(snapshot.events || {});
     var listIndex;
     var entryIndex;
-    var targetIndex;
     var entries;
     var entry;
     var expanded;
@@ -148,7 +153,7 @@
             routeWeight = slot.routes[part.part];
             if (routeWeight !== undefined) {
               next = candidate(entry, slot.type, routeWeight, part.weight, snapshot.config.globalMultiplier,
-                contributionIdentity(entry, 'baseline', entryIndex, part.part));
+                contributionIdentity(entry, 'baseline', part.part));
               if (betterBaseline(next, baselineWinner)) {
                 baselineWinner = next;
               }
@@ -167,7 +172,7 @@
               routeWeight = slot.routes[part.part];
               if (routeWeight !== undefined) {
                 next = candidate(entry, slot.type, routeWeight, part.weight, snapshot.config.globalMultiplier,
-                  contributionIdentity(entry, 'transient', entryIndex, part.part));
+                  contributionIdentity(entry, 'transient', part.part));
                 if (newerTransient(next, transientWinner)) {
                   transientWinner = next;
                 }

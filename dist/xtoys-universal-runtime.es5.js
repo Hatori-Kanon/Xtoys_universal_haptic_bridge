@@ -263,8 +263,11 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       part: raw.part,
       effect: raw.effect === undefined ? 'hold' : raw.effect,
       intensity: ns.clamp(parsed.value, 0, 100),
+      hasIntensity: raw.intensity !== undefined,
       frequency: 0,
+      hasFrequency: raw.frequency !== undefined,
       rotateSpeed: null,
+      hasRotateSpeed: raw.rotateSpeed !== undefined,
       rotateDirection: null,
       durationMs: 0,
       rampUpMs: 0,
@@ -825,6 +828,12 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
   }
 
   function hasActuator(target, type) {
+    if (type === 'rotation' && target.hasRotateSpeed === false) {
+      return false;
+    }
+    if (type === 'intensity' && target.hasIntensity === false) {
+      return false;
+    }
     return typeof targetValue(target, type) === 'number' && isFinite(targetValue(target, type));
   }
 
@@ -843,10 +852,10 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return parts;
   }
 
-  function contributionIdentity(entry, kind, targetIndex, leafPart) {
+  function contributionIdentity(entry, kind, leafPart) {
     var eventId = entry.eventId === undefined || entry.eventId === null ? '' : entry.eventId;
     return kind + '\u001f' + (entry.source || '') + '\u001f' + eventId + '\u001f' +
-      targetIndex + '\u001f' + leafPart;
+      entry.target.part + '\u001f' + leafPart;
   }
 
   function candidate(entry, type, routeWeight, groupWeight, multiplier, identity) {
@@ -925,7 +934,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var eventLists = ownValues(snapshot.events || {});
     var listIndex;
     var entryIndex;
-    var targetIndex;
     var entries;
     var entry;
     var expanded;
@@ -953,7 +961,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
             routeWeight = slot.routes[part.part];
             if (routeWeight !== undefined) {
               next = candidate(entry, slot.type, routeWeight, part.weight, snapshot.config.globalMultiplier,
-                contributionIdentity(entry, 'baseline', entryIndex, part.part));
+                contributionIdentity(entry, 'baseline', part.part));
               if (betterBaseline(next, baselineWinner)) {
                 baselineWinner = next;
               }
@@ -972,7 +980,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
               routeWeight = slot.routes[part.part];
               if (routeWeight !== undefined) {
                 next = candidate(entry, slot.type, routeWeight, part.weight, snapshot.config.globalMultiplier,
-                  contributionIdentity(entry, 'transient', entryIndex, part.part));
+                  contributionIdentity(entry, 'transient', part.part));
                 if (newerTransient(next, transientWinner)) {
                   transientWinner = next;
                 }

@@ -75,6 +75,10 @@ function slotsFor(runtime, state, routeConfig, nowMs) {
   return runtime.computeSlots(state, routeConfig, nowMs === undefined ? 0 : nowMs);
 }
 
+function parse(payload, routeConfig) {
+  return runtime.parseMessage(JSON.stringify(payload), routeConfig || config());
+}
+
 test('exposes routing and mixing APIs', function () {
   assert.equal(typeof runtime.computeSlots, 'function');
   assert.equal(typeof runtime.mixValue, 'function');
@@ -122,6 +126,44 @@ test('ignores targets without the actuator required by their physical slot type'
   assert.equal(intensityResult[0].transientWinner, null);
   assert.equal(rotationResult[2].value, 0);
   assert.equal(rotationResult[2].transientWinner, null);
+});
+
+test('does not let a parsed rotation-only transient publish to an intensity slot', function () {
+  var engine = runtime.createStateEngine();
+  var baselineMessage = parse({
+    protocolVersion: 1,
+    command: 'set_baseline',
+    source: 'baseline-source',
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80, frequency: 65 }]
+  });
+  var rotationMessage = parse({
+    protocolVersion: 1,
+    command: 'play',
+    source: 'rotation-source',
+    eventId: 'rotation-only',
+    sequence: 1,
+    targets: [{
+      part: 'clitoris',
+      rotateSpeed: 90,
+      rotateDirection: 'clockwise',
+      durationMs: 1000,
+      baselineBlend: 'replace'
+    }]
+  });
+  var output;
+
+  assert.equal(baselineMessage.ok, true);
+  assert.equal(rotationMessage.ok, true);
+  engine.applyMessage(baselineMessage.message, 0, false);
+  engine.applyMessage(rotationMessage.message, 10, false);
+  output = slotsFor(runtime, engine.snapshot(), validatedConfig(), 20)[0];
+
+  assert.equal(output.value, 40);
+  assert.equal(output.frequency, 65);
+  assert.equal(output.baselineWinner.target.part, 'clitoris');
+  assert.equal(output.transientWinner, null);
+  assert.equal(rotationMessage.message.targets[0].hasIntensity, false);
 });
 
 test('arbitrates multiple parts sharing one physical slot while independently resolving other slots', function () {
@@ -185,4 +227,80 @@ test('resolves rotation speed with the same mixing rules and switches direction 
   assert.equal(offPhase.value, 15);
   assert.equal(offPhase.direction, 'clockwise');
   assert.equal(onPhase.frequency, 0);
+});
+
+test('uses exact pulse boundaries, rollover, and zero-duration pulse phases', function () {
+  var routeConfig = validatedConfig();
+  var baselineState = { a: baseline('clitoris', { intensity: 60 }) };
+  var pulseState = snapshot(baselineState, {
+    pulse: [transient('clitoris', {
+      intensity: 20,
+      baselineBlend: 'replace',
+      effect: 'pulse',
+      pulseOnMs: 100,
+      pulseOffMs: 100,
+      acceptedAt: 1000
+    })]
+  });
+  var zeroOnState = snapshot(baselineState, {
+    pulse: [transient('clitoris', {
+      intensity: 20,
+      baselineBlend: 'replace',
+      effect: 'pulse',
+      pulseOnMs: 0,
+      pulseOffMs: 100,
+      acceptedAt: 1000
+    })]
+  });
+  var zeroOffState = snapshot(baselineState, {
+    pulse: [transient('clitoris', {
+      intensity: 20,
+      baselineBlend: 'replace',
+      effect: 'pulse',
+      pulseOnMs: 100,
+      pulseOffMs: 0,
+      acceptedAt: 1000
+    })]
+  });
+
+  assert.equal(slotsFor(runtime, pulseState, routeConfig, 1000)[0].value, 10);
+  assert.equal(slotsFor(runtime, pulseState, routeConfig, 1100)[0].value, 30);
+  assert.equal(slotsFor(runtime, pulseState, routeConfig, 1200)[0].value, 10);
+  assert.equal(slotsFor(runtime, zeroOnState, routeConfig, 1000)[0].value, 30);
+  assert.equal(slotsFor(runtime, zeroOffState, routeConfig, 1100)[0].value, 10);
+});
+
+test('returns the complete resolved schema for every physical slot', function () {
+  var result = slotsFor(runtime, snapshot({
+    baseline: baseline('clitoris', {
+      intensity: 80,
+      frequency: 65,
+      rampUpMs: 300,
+      rampDownMs: 500,
+      pulseOnMs: 0,
+      pulseOffMs: 0
+    })
+  }, {}, 7), validatedConfig());
+  var expectedKeys = [
+    'baselineWinner', 'direction', 'enabled', 'frequency', 'generation', 'id',
+    'pulseOffMs', 'pulseOnMs', 'rampDownMs', 'rampUpMs', 'transientWinner', 'type', 'value'
+  ];
+
+  assert.equal(result.length, 16);
+  result.forEach(function (slot) {
+    assert.deepEqual(Object.keys(slot).sort(), expectedKeys);
+    assert.equal(slot.generation, 7);
+  });
+  assert.equal(result[0].value, 40);
+  assert.equal(result[0].frequency, 65);
+  assert.equal(result[0].direction, null);
+  assert.equal(result[0].rampUpMs, 300);
+  assert.equal(result[0].rampDownMs, 500);
+  assert.equal(result[0].pulseOnMs, 0);
+  assert.equal(result[0].pulseOffMs, 0);
+  assert.equal(result[0].baselineWinner.target.part, 'clitoris');
+  assert.equal(result[0].transientWinner, null);
+  assert.equal(result[2].direction, null);
+  assert.equal(result[2].baselineWinner, null);
+  assert.equal(result[2].transientWinner, null);
 });

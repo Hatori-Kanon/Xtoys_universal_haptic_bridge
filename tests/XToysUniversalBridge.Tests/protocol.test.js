@@ -37,8 +37,11 @@ test('parses a valid play message into the complete normalized target shape', fu
     part: 'vagina',
     effect: 'hold',
     intensity: 40,
+    hasIntensity: true,
     frequency: 0,
+    hasFrequency: false,
     rotateSpeed: null,
+    hasRotateSpeed: false,
     rotateDirection: null,
     durationMs: 1000,
     rampUpMs: 0,
@@ -49,6 +52,23 @@ test('parses a valid play message into the complete normalized target shape', fu
     blend: 'replace',
     baselineBlend: 'boost'
   });
+});
+
+test('preserves optional actuator presence separately from normalized defaults', function () {
+  var runtime = loadRuntime();
+  var payload = validPlay();
+  var result;
+
+  delete payload.targets[0].intensity;
+  payload.targets[0].rotateSpeed = 60;
+  payload.targets[0].rotateDirection = 'clockwise';
+  result = parse(runtime, payload);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.message.targets[0].intensity, 0);
+  assert.equal(result.message.targets[0].hasIntensity, false);
+  assert.equal(result.message.targets[0].rotateSpeed, 60);
+  assert.equal(result.message.targets[0].hasRotateSpeed, true);
 });
 
 test('validates and copies a complete sixteen-slot configuration', function () {
