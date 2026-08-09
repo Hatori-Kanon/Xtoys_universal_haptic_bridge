@@ -205,6 +205,23 @@ test('set baseline replaces the complete source snapshot and empty targets clear
   assert.deepEqual(Object.keys(engine.snapshot().baseline), []);
 });
 
+test('rejects a stale baseline sequence when the source is __proto__', function () {
+  var engine = buildAndCreateEngine();
+  var snapshot;
+
+  engine.applyMessage(message('set_baseline', {
+    source: '__proto__', sequence: 2, targets: [target('vagina', 0)]
+  }), 0, false);
+  engine.applyMessage(message('set_baseline', {
+    source: '__proto__', sequence: 1, targets: [target('anus', 0)]
+  }), 10, false);
+  snapshot = plain(engine.snapshot());
+
+  assert.deepEqual(Object.keys(snapshot.baseline), [eventKey('__proto__', 'vagina')]);
+  assert.equal(snapshot.baseline[eventKey('__proto__', 'vagina')].sequence, 2);
+  assert.equal(snapshot.baseline[eventKey('__proto__', 'vagina')].target.part, 'vagina');
+});
+
 test('stop all clears both logical maps and advances the global generation', function () {
   var engine = buildAndCreateEngine();
   var result;

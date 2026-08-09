@@ -10,6 +10,10 @@
     return source + separator + part;
   }
 
+  function sourceKey(source) {
+    return separator + source;
+  }
+
   function copy(value) {
     return ns.copyObject(value);
   }
@@ -177,7 +181,7 @@
     }
 
     function applyBaseline(message, dryRun) {
-      var sequenceKey = message.source;
+      var sequenceKey = sourceKey(message.source);
       var currentSequence = baselineSequences[sequenceKey];
       var nextBaseline;
       var nextSequences;
