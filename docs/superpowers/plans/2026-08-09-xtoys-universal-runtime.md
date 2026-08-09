@@ -77,10 +77,12 @@ Create `build.test.js` with a test that invokes the PowerShell build script, ass
 test('build emits one ES5 runtime in module order', function () {
   var output = buildRuntime();
   assert.match(output, /var XTHB =/);
-  assert.ok(output.indexOf('XTHB.MODULE_NAMESPACE') < output.indexOf('XTHB.MODULE_GLOBAL_ENTRY'));
+  assert.match(output, /XTHB.MODULE_NAMESPACE/);
   assert.doesNotMatch(output, /\b(let|const|class|async|await)\b|=>/);
 });
 ```
+
+Task 1 verifies only modules that exist in Task 1. The Global Entry marker and public functions are added and tested in Task 6, after their dependencies exist.
 
 - [ ] **Step 2: Run the test and confirm the build is missing**
 
@@ -501,6 +503,8 @@ The final action must be:
 
 Direction codes are `1` for clockwise, `-1` for counterclockwise, and `0` when no direction action should run. Verify slot IDs outside 1-16 are rejected.
 
+Load the rebuilt distribution and assert that `XTHB.MODULE_GLOBAL_ENTRY` is present and that all six public functions named in this task's Interfaces section exist as global functions. This is the first task that requires the Global Entry module.
+
 - [ ] **Step 2: Run adapter tests and confirm failure**
 
 ```powershell
@@ -653,6 +657,6 @@ git add tests/XToysUniversalBridge.Tests dist/xtoys-universal-runtime.es5.js
 git commit -m "test: verify universal runtime acceptance flow"
 ```
 
-- [ ] **Step 6: Perform manual XToys smoke test**
+- [ ] **Step 6: Prepare the user-assisted XToys smoke test**
 
-Paste the built runtime into the XToys global JavaScript page, create one intensity slot and one rotation slot from the setup guide, start the Script, and send the documented baseline/play/update/stop_all examples. Record the tested XToys Script revision and any action-JSON differences in `docs/xtoys-template-setup.md` before beginning adapter migrations.
+Add a final checklist to `docs/xtoys-template-setup.md` covering: paste the built runtime into the XToys global JavaScript page; create one intensity slot and one rotation slot; start the Script; send the documented baseline/play/direction-update/stop_all examples; confirm intensity, ramp, direction, baseline restoration, and Final Action zeroing. Automated Task 8 completion records this checklist as pending user-assisted hardware validation rather than claiming real-device success. After the user performs it, record the tested XToys Script revision and any action-JSON differences before beginning game-adapter migrations.
