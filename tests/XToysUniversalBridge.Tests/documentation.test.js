@@ -106,17 +106,43 @@ test('all manual JSON examples parse and include a valid 16-slot config', functi
   assert.equal(runtime.XTHB.validateConfig(configs[0]).ok, true);
 });
 
-test('every webhook envelope contains parseable protocol v1 payload', function () {
-  var envelopes = jsonBlocks(readManual()).filter(function (value) {
+test('every webhook envelope is a valid protocol v1 command for the manual config', function () {
+  var blocks = jsonBlocks(readManual());
+  var runtime = runtimeHarness.loadRuntime();
+  var config = blocks.filter(function (value) {
+    return value && value.groups && value.slots;
+  })[0];
+  var envelopes = blocks.filter(function (value) {
     return value && value.action === 'xtoys_game_bridge';
   });
-  assert.ok(envelopes.length >= 6);
+  assert.equal(envelopes.length, 6);
+  assert.deepEqual(envelopes.map(function (envelope) {
+    return JSON.parse(envelope.payload).command;
+  }).sort(), [
+    'set_baseline',
+    'play',
+    'update',
+    'stop',
+    'stop_all',
+    'test'
+  ].sort());
   envelopes.forEach(function (envelope) {
     var payload = JSON.parse(envelope.payload);
+    var parsed = runtime.XTHB.parseMessage(JSON.stringify(payload), config);
     assert.equal(payload.protocolVersion, 1);
     assert.equal(typeof payload.command, 'string');
     assert.equal(typeof payload.source, 'string');
+    assert.equal(parsed.ok, true, payload.command + ': ' + parsed.code);
   });
+});
+
+test('manual keeps slot testing separate from protocol frequency and disabled-route checks', function () {
+  var manual = readManual();
+
+  assert.match(manual, /`xtoysBridgeTestSlot\(slotId, value\)` 只用于强度、速度与归零/);
+  assert.match(manual, /带非零 `frequency` 的低值 `play` 或 `set_baseline`/);
+  assert.match(manual, /`update` 必须在有限事件到期前发送/);
+  assert.match(manual, /临时给一个禁用槽加入已知 `routes`.*保持 `enabled: false`.*`xtoysBridgeReloadConfig\(\)`/);
 });
 
 test('relative Markdown links in the manual resolve inside the repository', function () {

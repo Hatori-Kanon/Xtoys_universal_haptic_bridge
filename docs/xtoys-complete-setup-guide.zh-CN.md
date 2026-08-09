@@ -258,7 +258,7 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 ```json
 {
   "action": "xtoys_game_bridge",
-  "payload": "{\"protocolVersion\":1,\"command\":\"play\",\"source\":\"manual-demo\",\"eventId\":\"acceptance-event\",\"sequence\":1,\"targets\":[{\"part\":\"vagina\",\"intensity\":20,\"frequency\":25,\"rotateSpeed\":25,\"rotateDirection\":\"clockwise\",\"durationMs\":1000,\"rampUpMs\":100,\"rampDownMs\":200,\"priority\":10}]}"
+  "payload": "{\"protocolVersion\":1,\"command\":\"play\",\"source\":\"manual-demo\",\"eventId\":\"acceptance-event\",\"sequence\":1,\"targets\":[{\"part\":\"vagina\",\"intensity\":20,\"frequency\":25,\"rotateSpeed\":25,\"rotateDirection\":\"clockwise\",\"durationMs\":30000,\"rampUpMs\":100,\"rampDownMs\":200,\"priority\":10}]}"
 }
 ```
 
@@ -267,9 +267,11 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 ```json
 {
   "action": "xtoys_game_bridge",
-  "payload": "{\"protocolVersion\":1,\"command\":\"update\",\"source\":\"manual-demo\",\"eventId\":\"acceptance-event\",\"sequence\":2,\"targets\":[{\"part\":\"vagina\",\"intensity\":30,\"frequency\":30,\"rotateSpeed\":35,\"rotateDirection\":\"counterclockwise\",\"durationMs\":1000,\"rampUpMs\":100,\"rampDownMs\":200,\"priority\":10}]}"
+  "payload": "{\"protocolVersion\":1,\"command\":\"update\",\"source\":\"manual-demo\",\"eventId\":\"acceptance-event\",\"sequence\":2,\"targets\":[{\"part\":\"vagina\",\"intensity\":30,\"frequency\":30,\"rotateSpeed\":35,\"rotateDirection\":\"counterclockwise\",\"durationMs\":30000,\"rampUpMs\":100,\"rampDownMs\":200,\"priority\":10}]}"
 }
 ```
+
+为给在场人员留出观察和记录时间，这两个低值示例使用 30000 ms。`update` 必须在有限事件到期前发送；若先前的 `play` 已到期，运行时会以 `absent_event` 忽略该 `update`，而不是重新创建事件。更新成功后，该 `update` 自己的 30000 ms 重新从接受时刻计算。
 
 ### 4. `stop`：停止指定有限事件
 
@@ -317,15 +319,15 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 ### B. 单槽低输出：真实硬件逐槽核对
 
 - **前置条件**：先在 XToys 把最大值设为使用者认可的低安全范围；一次只连接当前测试槽；当前槽必须 `enabled: true`，且 A 已通过。
-- **动作**：对每个已启用槽单独调用 `xtoysBridgeTestSlot(slotId, value)`，从低值开始。强度槽确认强度；频率槽在同一低输出下确认频率 Action；旋转槽确认速度后分别由协议 `play`/`update` 的显式方向确认顺时针和逆时针。每次确认后调用 `xtoysBridgeTestSlot(slotId, 0)`，最后手动停止 Script。
-- **预期结果**：只有当前连接的槽有真实输出；频率、Rotate 速度和方向与对应 Job 条件一致；Final Actions 将当前设备实际归零。
+- **动作**：对每个已启用槽单独调用 `xtoysBridgeTestSlot(slotId, value)`，从低值开始；`xtoysBridgeTestSlot(slotId, value)` 只用于强度、速度与归零。它固定写入 `frequency: 0` 和 `direction: null`，所以强度槽只确认强度、Rotate 槽只确认速度，并在每次确认后调用 `xtoysBridgeTestSlot(slotId, 0)`。频率槽改用带非零 `frequency` 的低值 `play` 或 `set_baseline` 验证频率 Action；Rotate 方向改用低值 `play` 的显式方向，并在事件到期前用 `update` 验证反向。最后手动停止 Script。
+- **预期结果**：只有当前连接的槽有真实输出；频率只由协议低值消息验证，Rotate 速度由 TestSlot 验证、方向由协议消息验证；Final Actions 将当前设备实际归零。
 - **失败即停止**：非当前槽输出、值无法控制、频率/方向不符、归零失败或停止无法立刻执行时停止。
 - **记录栏**：槽号 ______；低值 ______；强度/频率/速度/方向观察 ______；Final Actions 零值确认 ______；设备 Action JSON ______。
 
 ### C. 多槽路由：字段隔离、共享槽、权重与禁用槽
 
 - **前置条件**：B 已完成；仅连接本次要核对的槽；最大值仍保持低安全范围。
-- **动作**：启用槽 01（强度/频率）和槽 03（Rotate），发送含 `intensity`、`frequency`、`rotateSpeed`、`rotateDirection` 的 `play`；确认每槽只消费自己的字段。再分别发送 `clitoris` 与 `vagina` 目标，确认它们通过槽 01 的共享 `routes` 进入同一物理槽的仲裁。调整一个 0–1 路由权重或 `globalMultiplier` 后重新以低值发送，确认有效输出按乘积变化；检查一个 `enabled: false` 槽仍无输出。
+- **动作**：启用槽 01（强度/频率）和槽 03（Rotate），发送含 `intensity`、`frequency`、`rotateSpeed`、`rotateDirection` 的 `play`；确认每槽只消费自己的字段。再分别发送 `clitoris` 与 `vagina` 目标，确认它们通过槽 01 的共享 `routes` 进入同一物理槽的仲裁。调整一个 0–1 路由权重或 `globalMultiplier` 后重新以低值发送，确认有效输出按乘积变化；临时给一个禁用槽加入已知 `routes`（例如槽 04 的 `clitoris: 1`），保持 `enabled: false` 并调用 `xtoysBridgeReloadConfig()`，再发送同一目标的低值消息，确认该槽仍不启动输出 Job。随后移除临时 route、恢复原配置并再次 reload。
 - **预期结果**：强度槽不把 `rotateSpeed` 当输出，旋转槽不把 `intensity` 当速度；共享部位不是相加，而是按上述胜者规则仲裁；权重和全局倍率生效，禁用槽不输出。
 - **失败即停止**：字段串槽、共享槽出现非预期叠加、禁用槽输出、或权重变化与记录不符时停止。
 - **记录栏**：槽 01 观察 ______；槽 03 观察 ______；共享路由胜者 ______；权重/倍率 ______；禁用槽确认 ______。
