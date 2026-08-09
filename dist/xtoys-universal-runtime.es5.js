@@ -1163,7 +1163,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         delete pendingDispatches[slot.id];
         return { changed: false, failure: null };
       }
-      if (generationFloors[slot.id] !== undefined) {
+      if (generationFloors[slot.id] === undefined) {
+        generationFloors[slot.id] = physicalSlot.generation;
+      } else {
         physicalSlot.generation = Math.max(physicalSlot.generation, generationFloors[slot.id] + 1);
         generationFloors[slot.id] = physicalSlot.generation;
       }
@@ -1344,13 +1346,21 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     };
 
     runtime.reserveSlotGeneration = function (slotId) {
-      var generation;
+      var generation = 0;
       if (typeof slotId !== 'number' || !isFinite(slotId) || slotId % 1 !== 0 || slotId < 1 || slotId > 16) {
         throw new Error('Runtime slot ID must be an integer from 1 through 16.');
       }
-      generation = generationFloors[slotId];
-      if (generation === undefined) {
-        generation = lastTuples[slotId] === undefined ? 0 : lastTuples[slotId].generation;
+      if (generationFloors[slotId] !== undefined) {
+        generation = Math.max(generation, generationFloors[slotId]);
+      }
+      if (lastTuples[slotId] !== undefined) {
+        generation = Math.max(generation, lastTuples[slotId].generation);
+      }
+      if (pendingDispatches[slotId] !== undefined) {
+        generation = Math.max(generation, pendingDispatches[slotId].tuple.generation);
+      }
+      if (lastSlots[slotId] !== undefined) {
+        generation = Math.max(generation, lastSlots[slotId].generation);
       }
       generation += 1;
       generationFloors[slotId] = generation;
@@ -1557,7 +1567,7 @@ var xtoysBridgeTestSlot;
       runtime.forceResync();
       if (hasRecentFailures(runtime)) {
         stopped = false;
-        stopRetryPending = wasStopRetryPending;
+        stopRetryPending = wasStopped || wasStopRetryPending;
       } else {
         stopped = wasStopped || wasStopRetryPending;
         stopRetryPending = false;

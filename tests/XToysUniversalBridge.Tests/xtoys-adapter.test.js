@@ -448,6 +448,27 @@ test('failed reload preserves partial-stop retry state when resync still fails',
   assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
 });
 
+test('failed reload of a fully stopped runtime becomes stopped after its resync retry succeeds', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var nextConfig = fixtureConfig();
+  var failSlotOneCount = 0;
+  loaded.context.callAction = function (action) {
+    if (action.job === 'xthb-output-01' && failSlotOneCount > 0) {
+      failSlotOneCount -= 1;
+      throw new Error('slot one unavailable');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  nextConfig.slots[0].enabled = false;
+  variables['xthb-config-json'] = JSON.stringify(nextConfig);
+  failSlotOneCount = 2;
+
+  assert.equal(loaded.context.xtoysBridgeReloadConfig(), 0);
+  assert.equal(loaded.context.xtoysBridgeTick(), 1);
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
+});
+
 test('manual slot testing clamps value and applies only an enabled configured slot', function () {
   var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
   var loaded = loadRuntime({ variables: variables });
@@ -571,6 +592,44 @@ test('a failed manual apply reserves safely and the next tick reasserts protocol
   assert.equal(loaded.context.xtoysBridgeTick(), 1);
   assert.ok(variables['xthb-slot-01-generation'] >= reservedGeneration);
   assert.equal(variables['xthb-slot-01-value'], 40);
+});
+
+test('manual reservation advances beyond a failed logical attempt and isolates other slots', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var calls = [];
+  var failLogicalSlotOne = false;
+  var attemptedGeneration;
+  var manualGeneration;
+  var slotTwoGeneration;
+  loaded.context.callAction = function (action) {
+    calls.push(plain(action));
+    if (failLogicalSlotOne && action.job === 'xthb-output-01') {
+      failLogicalSlotOne = false;
+      throw new Error('logical dispatch failed');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  calls.length = 0;
+  failLogicalSlotOne = true;
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80 }]
+  }));
+  attemptedGeneration = variables['xthb-slot-01-generation'];
+  slotTwoGeneration = variables['xthb-slot-02-generation'];
+
+  calls.length = 0;
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, 90), 1);
+  manualGeneration = variables['xthb-slot-01-generation'];
+  assert.ok(manualGeneration > attemptedGeneration);
+  assert.deepEqual(enabledJobNames(calls), ['xthb-output-01']);
+  calls.length = 0;
+  assert.equal(loaded.context.xtoysBridgeTick(), 1);
+  assert.ok(variables['xthb-slot-01-generation'] > manualGeneration);
+  assert.equal(variables['xthb-slot-01-value'], 40);
+  assert.equal(variables['xthb-slot-02-generation'], slotTwoGeneration);
+  assert.deepEqual(enabledJobNames(calls), ['xthb-output-01']);
 });
 
 test('manual slot testing rejects coercive values but accepts finite numbers and numeric strings', function () {

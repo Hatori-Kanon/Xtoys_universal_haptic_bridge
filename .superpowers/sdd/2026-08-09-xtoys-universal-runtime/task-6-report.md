@@ -108,3 +108,32 @@
 - No known automated-contract gaps remain from formal review round 2.
 - Cleanup failure control flow is contract-tested and normal/concurrent publication is exercised; an operating-system-level forced file-deletion failure is not injected by the suite.
 - Real XToys/JS-Interpreter and hardware validation remains user-assisted acceptance work; no device validation is claimed.
+
+## Formal review round 3
+
+### RED
+
+- Added a regression where a logical dispatch writes generation N and then fails before the Job starts. The first manual reservation incorrectly reused N instead of advancing beyond the attempted physical generation.
+- Added a fully-stopped rollback regression where both reload publication and the immediate forced resync fail. After the later tick succeeded, the public layer still treated the runtime as active and dispatched three redundant stop writes.
+- The focused RED had 39 tests: 37 passed and the two new regressions failed for their expected assertions.
+
+### GREEN
+
+- Every runtime adapter attempt now records its per-slot physical generation floor before calling the adapter, including failed attempts. Manual reservation advances beyond attempted, cached, pending, and floor generations; subsequent recovery advances again, while unrelated slots remain untouched.
+- A failed rollback resync now preserves stop retry intent when the prior runtime was either fully stopped or already partially stopped. A successful later tick returns the public lifecycle to stopped and idempotent.
+
+### Verification
+
+- Focused runtime/adapter suites: 39 passed, 0 failed.
+- Full suite: 78 passed, 0 failed in one requested Round 3 run.
+- Build completed successfully; the distribution exactly matched current sorted sources with SHA-256 `9516DA04B847DE5B12AB8EFBECD2EEDB9D1F3978ECD1FDC2CF2C57D4E6C4A516`.
+- `git diff --check` passed.
+
+### Commit
+
+- `fix: track attempted XToys generations`
+
+### Concerns
+
+- No known automated-contract gaps remain from formal review round 3.
+- Real XToys/JS-Interpreter and hardware validation remains user-assisted acceptance work; no device validation is claimed.

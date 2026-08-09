@@ -122,7 +122,7 @@ var xtoysBridgeTestSlot;
       runtime.forceResync();
       if (hasRecentFailures(runtime)) {
         stopped = false;
-        stopRetryPending = wasStopRetryPending;
+        stopRetryPending = wasStopped || wasStopRetryPending;
       } else {
         stopped = wasStopped || wasStopRetryPending;
         stopRetryPending = false;
