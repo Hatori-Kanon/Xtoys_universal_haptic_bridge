@@ -1,0 +1,306 @@
+'use strict';
+
+var assert = require('node:assert/strict');
+var fs = require('node:fs');
+var path = require('node:path');
+var test = require('node:test');
+var loadRuntime = require('./harness').loadRuntime;
+
+var fixtures = path.join(__dirname, 'fixtures');
+var runtime = loadRuntime().XTHB;
+
+function config() {
+  return JSON.parse(fs.readFileSync(path.join(fixtures, 'config.json'), 'utf8'));
+}
+
+function validatedConfig(mutate) {
+  var value = config();
+  if (mutate) {
+    mutate(value);
+  }
+  return runtime.validateConfig(value).config;
+}
+
+function target(part, values) {
+  var data = values || {};
+  return {
+    part: part,
+    effect: data.effect || 'hold',
+    intensity: data.intensity === undefined ? 0 : data.intensity,
+    frequency: data.frequency === undefined ? 0 : data.frequency,
+    rotateSpeed: data.rotateSpeed === undefined ? null : data.rotateSpeed,
+    rotateDirection: data.rotateDirection === undefined ? null : data.rotateDirection,
+    durationMs: data.durationMs === undefined ? 1000 : data.durationMs,
+    rampUpMs: data.rampUpMs === undefined ? 0 : data.rampUpMs,
+    rampDownMs: data.rampDownMs === undefined ? 0 : data.rampDownMs,
+    pulseOnMs: data.pulseOnMs === undefined ? 0 : data.pulseOnMs,
+    pulseOffMs: data.pulseOffMs === undefined ? 0 : data.pulseOffMs,
+    priority: data.priority === undefined ? 0 : data.priority,
+    blend: data.blend || 'replace',
+    baselineBlend: data.baselineBlend || 'boost'
+  };
+}
+
+function baseline(part, values) {
+  var data = values || {};
+  return {
+    source: data.source || 'baseline',
+    sequence: data.sequence === undefined ? 1 : data.sequence,
+    target: target(part, data)
+  };
+}
+
+function transient(part, values) {
+  var data = values || {};
+  return {
+    source: data.source || 'event',
+    eventId: data.eventId || 'event-1',
+    sequence: data.sequence === undefined ? 1 : data.sequence,
+    acceptedAt: data.acceptedAt === undefined ? 0 : data.acceptedAt,
+    expiresAt: data.expiresAt === undefined ? 1000 : data.expiresAt,
+    generation: data.generation === undefined ? 1 : data.generation,
+    target: target(part, data)
+  };
+}
+
+function snapshot(baselineEntries, eventEntries, generation) {
+  return {
+    baseline: baselineEntries || {},
+    events: eventEntries || {},
+    generation: generation === undefined ? 1 : generation
+  };
+}
+
+function slotsFor(runtime, state, routeConfig, nowMs) {
+  return runtime.computeSlots(state, routeConfig, nowMs === undefined ? 0 : nowMs);
+}
+
+function parse(payload, routeConfig) {
+  return runtime.parseMessage(JSON.stringify(payload), routeConfig || config());
+}
+
+test('exposes routing and mixing APIs', function () {
+  assert.equal(typeof runtime.computeSlots, 'function');
+  assert.equal(typeof runtime.mixValue, 'function');
+});
+
+test('routes a leaf value through its route weight and preserves sixteen physical slots', function () {
+  var result = slotsFor(runtime, snapshot({ a: baseline('clitoris', { intensity: 80, frequency: 65 }) }), validatedConfig());
+
+  assert.equal(result.length, 16);
+  assert.equal(result[0].value, 40);
+  assert.equal(result[0].frequency, 65);
+  assert.equal(result[0].baselineWinner.target.part, 'clitoris');
+  assert.equal(result[1].value, 20);
+  assert.equal(result[3].enabled, false);
+  assert.equal(result[3].value, 0);
+  assert.equal(result[3].baselineWinner, null);
+});
+
+test('expands groups before applying route weight and global multiplier with one final clamp', function () {
+  var routeConfig = validatedConfig(function (value) {
+    value.globalMultiplier = 2;
+    value.groups.genitals = { clitoris: 0.5 };
+  });
+  var result = slotsFor(runtime, snapshot({ a: baseline('genitals', { intensity: 100 }) }), routeConfig);
+
+  assert.equal(result[0].value, 50);
+  assert.equal(result[1].value, 25);
+  assert.equal(result[0].baselineWinner.target.part, 'genitals');
+});
+
+test('ignores targets without the actuator required by their physical slot type', function () {
+  var intensityWithoutIntensity = transient('clitoris', { rotateSpeed: 80, rotateDirection: 'clockwise' });
+  var rotationWithoutSpeed = transient('vagina', { intensity: 90 });
+  delete intensityWithoutIntensity.target.intensity;
+  delete rotationWithoutSpeed.target.rotateSpeed;
+  var routeConfig = validatedConfig();
+  var intensityResult = slotsFor(runtime, snapshot({}, {
+    intensity: [intensityWithoutIntensity]
+  }), routeConfig);
+  var rotationResult = slotsFor(runtime, snapshot({}, {
+    rotation: [rotationWithoutSpeed]
+  }), routeConfig);
+
+  assert.equal(intensityResult[0].value, 0);
+  assert.equal(intensityResult[0].transientWinner, null);
+  assert.equal(rotationResult[2].value, 0);
+  assert.equal(rotationResult[2].transientWinner, null);
+});
+
+test('does not let a parsed rotation-only transient publish to an intensity slot', function () {
+  var engine = runtime.createStateEngine();
+  var baselineMessage = parse({
+    protocolVersion: 1,
+    command: 'set_baseline',
+    source: 'baseline-source',
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80, frequency: 65 }]
+  });
+  var rotationMessage = parse({
+    protocolVersion: 1,
+    command: 'play',
+    source: 'rotation-source',
+    eventId: 'rotation-only',
+    sequence: 1,
+    targets: [{
+      part: 'clitoris',
+      rotateSpeed: 90,
+      rotateDirection: 'clockwise',
+      durationMs: 1000,
+      baselineBlend: 'replace'
+    }]
+  });
+  var output;
+
+  assert.equal(baselineMessage.ok, true);
+  assert.equal(rotationMessage.ok, true);
+  engine.applyMessage(baselineMessage.message, 0, false);
+  engine.applyMessage(rotationMessage.message, 10, false);
+  output = slotsFor(runtime, engine.snapshot(), validatedConfig(), 20)[0];
+
+  assert.equal(output.value, 40);
+  assert.equal(output.frequency, 65);
+  assert.equal(output.baselineWinner.target.part, 'clitoris');
+  assert.equal(output.transientWinner, null);
+  assert.equal(rotationMessage.message.targets[0].hasIntensity, false);
+});
+
+test('arbitrates multiple parts sharing one physical slot while independently resolving other slots', function () {
+  var result = slotsFor(runtime, snapshot({
+    vagina: baseline('vagina', { intensity: 60 }),
+    clitoris: baseline('clitoris', { intensity: 80 })
+  }), validatedConfig());
+
+  assert.equal(result[0].value, 48);
+  assert.equal(result[0].baselineWinner.target.part, 'vagina');
+  assert.equal(result[1].value, 20);
+  assert.equal(result[1].baselineWinner.target.part, 'clitoris');
+});
+
+test('uses the documented stable transient tie-break order', function () {
+  var events = {
+    lowPriority: [transient('clitoris', { intensity: 100, priority: 1, sequence: 99, acceptedAt: 99, generation: 99 })],
+    lowValue: [transient('clitoris', { intensity: 20, priority: 2, sequence: 99, acceptedAt: 99, generation: 99 })],
+    oldSequence: [transient('clitoris', { intensity: 80, priority: 2, sequence: 1, acceptedAt: 99, generation: 99 })],
+    oldAccepted: [transient('clitoris', { intensity: 80, priority: 2, sequence: 2, acceptedAt: 1, generation: 99 })],
+    oldGeneration: [transient('clitoris', { intensity: 80, priority: 2, sequence: 2, acceptedAt: 2, generation: 1 })],
+    winner: [transient('clitoris', { intensity: 80, priority: 2, sequence: 2, acceptedAt: 2, generation: 2 })]
+  };
+  var result = slotsFor(runtime, snapshot({}, events), validatedConfig());
+
+  assert.equal(result[0].transientWinner.generation, 2);
+  assert.equal(result[0].transientWinner.sequence, 2);
+  assert.equal(result[0].transientWinner.acceptedAt, 2);
+});
+
+test('mixes only baseline and transient winners using exact boost, max, and replace values', function () {
+  assert.equal(runtime.mixValue(30, 20, 'boost'), 44);
+  assert.equal(runtime.mixValue(30, 20, 'max'), 30);
+  assert.equal(runtime.mixValue(30, 20, 'replace'), 20);
+
+  assert.equal(slotsFor(runtime, snapshot({ a: baseline('clitoris', { intensity: 60 }) }, {
+    transient: [transient('clitoris', { intensity: 40, baselineBlend: 'boost' })]
+  }), validatedConfig())[0].value, 44);
+});
+
+test('resolves rotation speed with the same mixing rules and switches direction by transient pulse phase', function () {
+  var routeConfig = validatedConfig();
+  var state = snapshot({
+    baseline: baseline('vagina', { rotateSpeed: 30, rotateDirection: 'clockwise' })
+  }, {
+    transient: [transient('vagina', {
+      rotateSpeed: 20,
+      rotateDirection: 'counterclockwise',
+      baselineBlend: 'boost',
+      effect: 'pulse',
+      pulseOnMs: 100,
+      pulseOffMs: 100,
+      acceptedAt: 1000
+    })]
+  });
+  var onPhase = slotsFor(runtime, state, routeConfig, 1050)[2];
+  var offPhase = slotsFor(runtime, state, routeConfig, 1150)[2];
+
+  assert.equal(onPhase.value, 23.5);
+  assert.equal(onPhase.direction, 'counterclockwise');
+  assert.equal(offPhase.value, 15);
+  assert.equal(offPhase.direction, 'clockwise');
+  assert.equal(onPhase.frequency, 0);
+});
+
+test('uses exact pulse boundaries, rollover, and zero-duration pulse phases', function () {
+  var routeConfig = validatedConfig();
+  var baselineState = { a: baseline('clitoris', { intensity: 60 }) };
+  var pulseState = snapshot(baselineState, {
+    pulse: [transient('clitoris', {
+      intensity: 20,
+      baselineBlend: 'replace',
+      effect: 'pulse',
+      pulseOnMs: 100,
+      pulseOffMs: 100,
+      acceptedAt: 1000
+    })]
+  });
+  var zeroOnState = snapshot(baselineState, {
+    pulse: [transient('clitoris', {
+      intensity: 20,
+      baselineBlend: 'replace',
+      effect: 'pulse',
+      pulseOnMs: 0,
+      pulseOffMs: 100,
+      acceptedAt: 1000
+    })]
+  });
+  var zeroOffState = snapshot(baselineState, {
+    pulse: [transient('clitoris', {
+      intensity: 20,
+      baselineBlend: 'replace',
+      effect: 'pulse',
+      pulseOnMs: 100,
+      pulseOffMs: 0,
+      acceptedAt: 1000
+    })]
+  });
+
+  assert.equal(slotsFor(runtime, pulseState, routeConfig, 1000)[0].value, 10);
+  assert.equal(slotsFor(runtime, pulseState, routeConfig, 1100)[0].value, 30);
+  assert.equal(slotsFor(runtime, pulseState, routeConfig, 1200)[0].value, 10);
+  assert.equal(slotsFor(runtime, zeroOnState, routeConfig, 1000)[0].value, 30);
+  assert.equal(slotsFor(runtime, zeroOffState, routeConfig, 1100)[0].value, 10);
+});
+
+test('returns the complete resolved schema for every physical slot', function () {
+  var result = slotsFor(runtime, snapshot({
+    baseline: baseline('clitoris', {
+      intensity: 80,
+      frequency: 65,
+      rampUpMs: 300,
+      rampDownMs: 500,
+      pulseOnMs: 0,
+      pulseOffMs: 0
+    })
+  }, {}, 7), validatedConfig());
+  var expectedKeys = [
+    'baselineWinner', 'direction', 'enabled', 'frequency', 'generation', 'id',
+    'pulseOffMs', 'pulseOnMs', 'rampDownMs', 'rampUpMs', 'transientWinner', 'type', 'value'
+  ];
+
+  assert.equal(result.length, 16);
+  result.forEach(function (slot) {
+    assert.deepEqual(Object.keys(slot).sort(), expectedKeys);
+    assert.equal(slot.generation, 7);
+  });
+  assert.equal(result[0].value, 40);
+  assert.equal(result[0].frequency, 65);
+  assert.equal(result[0].direction, null);
+  assert.equal(result[0].rampUpMs, 300);
+  assert.equal(result[0].rampDownMs, 500);
+  assert.equal(result[0].pulseOnMs, 0);
+  assert.equal(result[0].pulseOffMs, 0);
+  assert.equal(result[0].baselineWinner.target.part, 'clitoris');
+  assert.equal(result[0].transientWinner, null);
+  assert.equal(result[2].direction, null);
+  assert.equal(result[2].baselineWinner, null);
+  assert.equal(result[2].transientWinner, null);
+});

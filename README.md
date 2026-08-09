@@ -4,7 +4,7 @@ This repository develops a reusable bridge between game-specific event plugins a
 
 ## Status
 
-The universal protocol and XToys-side architecture are currently design-complete and ready for implementation planning. The approved design supports:
+The universal protocol and XToys-side runtime milestone is implemented, with its automated acceptance suite passing. User-assisted validation in a real XToys Script and on connected hardware remains pending; this repository does not yet claim real-device success. The implemented design supports:
 
 - Fine-grained logical body parts and virtual groups.
 - Sixteen independently configured physical output slots.
@@ -15,6 +15,14 @@ The universal protocol and XToys-side architecture are currently design-complete
 - Manual XToys Script lifecycle without game-process detection or heartbeat logic.
 
 See the [approved universal bridge specification](docs/superpowers/specs/2026-08-08-xtoys-universal-haptic-bridge-design.md).
+
+## Quick start
+
+1. Build the runtime and paste `dist/xtoys-universal-runtime.es5.js` into one XToys Script global JavaScript page.
+2. Follow the Chinese-friendly [one-time XToys template setup guide](docs/xtoys-template-setup.md) to configure `xthb-config-json`, the single Webhook Global Trigger, scheduler, output Jobs, and zero-output safety actions.
+3. Have each game Bridge send the escaped outer Webhook payloads defined in the [protocol v1 guide](docs/xtoys-protocol-v1.md). The game must not name XToys devices or Jobs.
+
+The template is manually started and stopped by the user. It controls current output only; it never changes a device's maximum intensity or maximum rotation speed.
 
 ## Repository layout
 
@@ -33,4 +41,3 @@ The universal script controls current output values only. It does not change XTo
 This development workspace may contain complete game directories, reverse-engineering artifacts, build output, logs, payload captures, archives, and local device configuration. The repository uses an allowlist-style `.gitignore` so these files remain local and are not published.
 
 Do not commit a populated XToys webhook ID. The checked-in Aruna configuration is intentionally disabled and has an empty webhook value.
-

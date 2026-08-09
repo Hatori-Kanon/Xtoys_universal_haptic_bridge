@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "command": "play",
+  "source": "fixture",
+  "eventId": "attack-1",
+  "sequence": 1,
+  "targets": [
+    {
+      "part": "vagina",
+      "intensity": 40,
+      "durationMs": 1000
+    }
+  ]
+}
