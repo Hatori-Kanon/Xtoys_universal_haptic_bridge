@@ -46,8 +46,9 @@
 
   function contributionIdentity(entry, kind, leafPart) {
     var eventId = entry.eventId === undefined || entry.eventId === null ? '' : entry.eventId;
-    return kind + '\u001f' + (entry.source || '') + '\u001f' + eventId + '\u001f' +
-      entry.target.part + '\u001f' + leafPart;
+    return ns.compositeKey([
+      kind, entry.source || '', eventId, entry.target.part, leafPart
+    ]);
   }
 
   function candidate(entry, type, routeWeight, groupWeight, multiplier, identity) {

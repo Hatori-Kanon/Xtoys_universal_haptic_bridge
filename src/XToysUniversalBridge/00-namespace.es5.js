@@ -15,6 +15,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       ? value
       : JSON.parse(JSON.stringify(value));
   };
+  ns.compositeKey = function (parts) {
+    return JSON.stringify(parts);
+  };
   ns.nowMs = function () { return new Date().getTime(); };
   ns.createDefaultConfig = function () {
     var groups = {

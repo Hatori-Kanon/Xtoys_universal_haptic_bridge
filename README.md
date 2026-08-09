@@ -4,7 +4,7 @@ This repository develops a reusable bridge between game-specific event plugins a
 
 ## Status
 
-The universal protocol and XToys-side architecture are currently design-complete and ready for implementation planning. The approved design supports:
+The universal protocol and XToys-side runtime milestone is implemented, with its automated acceptance suite passing. User-assisted validation in a real XToys Script and on connected hardware remains pending; this repository does not yet claim real-device success. The implemented design supports:
 
 - Fine-grained logical body parts and virtual groups.
 - Sixteen independently configured physical output slots.

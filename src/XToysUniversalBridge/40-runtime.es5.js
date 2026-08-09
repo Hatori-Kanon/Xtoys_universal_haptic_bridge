@@ -95,8 +95,7 @@
       var physicalSlot = copy(slot);
       var failure;
       tuple.rampSeconds = transition.rampSeconds;
-      if (!force && sameTuple(lastTuples[slot.id], tuple)) {
-        delete pendingDispatches[slot.id];
+      if (!force && pendingDispatches[slot.id] === undefined && sameTuple(lastTuples[slot.id], tuple)) {
         return { changed: false, failure: null };
       }
       if (generationFloors[slot.id] === undefined) {
@@ -219,6 +218,14 @@
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
       expired = engine.expire(atMs, false);
+      if (applied.ignoredReason === 'absent_event' && !expired.changed) {
+        return {
+          ok: true,
+          changed: false,
+          changedSlots: 0,
+          dispatchFailures: []
+        };
+      }
       dispatched = dispatch(atMs, expired.changedParts);
       reportFailures(dispatched.failures);
       return {

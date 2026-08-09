@@ -594,6 +594,35 @@ test('a failed manual apply reserves safely and the next tick reasserts protocol
   assert.equal(variables['xthb-slot-01-value'], 40);
 });
 
+test('a partial failed manual test makes immediate stopAll reassert the complete zero tuple', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ variables: variables });
+  var failManualFrequency = false;
+  var originalSetVariable = loaded.context.setVariable;
+  loaded.context.setVariable = function (name, value) {
+    originalSetVariable(name, value);
+    if (failManualFrequency && name === 'xthb-slot-01-frequency') {
+      failManualFrequency = false;
+      throw new Error('partial manual write');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.actions.length = 0;
+  failManualFrequency = true;
+
+  assert.equal(loaded.context.xtoysBridgeTestSlot(1, 100), 0);
+  assert.equal(variables['xthb-slot-01-value'], 100);
+  loaded.actions.length = 0;
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 3);
+  assert.deepEqual(enabledJobNames(loaded.actions), [
+    'xthb-output-01', 'xthb-output-02', 'xthb-output-03'
+  ]);
+  assert.equal(variables['xthb-slot-01-value'], 0);
+  assert.equal(variables['xthb-slot-01-frequency'], 0);
+  assert.equal(variables['xthb-slot-01-ramp-seconds'], 0);
+  assert.equal(variables['xthb-slot-01-direction-code'], 0);
+});
+
 test('manual reservation advances beyond a failed logical attempt and isolates other slots', function () {
   var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
   var loaded = loadRuntime({ variables: variables });

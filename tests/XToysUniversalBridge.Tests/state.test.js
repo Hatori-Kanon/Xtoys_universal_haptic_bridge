@@ -8,7 +8,6 @@ var loadRuntime = require('./harness').loadRuntime;
 
 var repositoryRoot = path.resolve(__dirname, '..', '..');
 var buildScript = path.join(repositoryRoot, 'scripts', 'Build-XToysRuntime.ps1');
-var separator = '\u001f';
 
 function buildAndCreateEngine() {
   childProcess.execFileSync(
@@ -51,7 +50,7 @@ function message(command, values) {
 }
 
 function eventKey(source, eventId) {
-  return source + separator + eventId;
+  return JSON.stringify([source, eventId]);
 }
 
 function plain(value) {
@@ -141,6 +140,41 @@ test('stop by event id removes only the matching source-scoped event', function 
 
   assert.equal(Object.prototype.hasOwnProperty.call(snapshot.events, eventKey('bridge-a', 'shared')), false);
   assert.equal(snapshot.events[eventKey('bridge-b', 'shared')][0].target.part, 'anus');
+});
+
+test('composite event identities cannot collide or stop across sources', function () {
+  var engine = buildAndCreateEngine();
+  var snapshot;
+  var entries;
+
+  engine.applyMessage(message('play', {
+    source: 'a', eventId: 'b\u001fc', sequence: 1, targets: [target('vagina')]
+  }), 0, false);
+  engine.applyMessage(message('play', {
+    source: 'a\u001fb', eventId: 'c', sequence: 1, targets: [target('anus')]
+  }), 0, false);
+  snapshot = engine.snapshot();
+  entries = Object.keys(snapshot.events).map(function (key) {
+    return snapshot.events[key][0];
+  });
+
+  assert.equal(entries.length, 2);
+  assert.deepEqual(entries.map(function (entry) {
+    return [entry.source, entry.eventId, entry.target.part];
+  }).sort(), [
+    ['a', 'b\u001fc', 'vagina'],
+    ['a\u001fb', 'c', 'anus']
+  ].sort());
+
+  engine.applyMessage(message('stop', { source: 'a', eventId: 'b\u001fc' }), 10, false);
+  snapshot = engine.snapshot();
+  entries = Object.keys(snapshot.events).map(function (key) {
+    return snapshot.events[key][0];
+  });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].source, 'a\u001fb');
+  assert.equal(entries[0].eventId, 'c');
+  assert.equal(entries[0].target.part, 'anus');
 });
 
 test('stop by event id and targets removes only those event parts', function () {
@@ -242,20 +276,28 @@ test('stop all clears both logical maps and advances the global generation', fun
   assert.equal(snapshot.generation, 3);
 });
 
-test('test returns a state preview without replacing live state', function () {
+test('test adds requested targets to an ephemeral snapshot without replacing live state', function () {
   var engine = buildAndCreateEngine();
   var before;
   var result;
+  var previewEntries;
 
   engine.applyMessage(message('play', {
     eventId: 'attack', sequence: 1, targets: [target('vagina')]
   }), 0, false);
   before = engine.snapshot();
   result = engine.applyMessage(message('test', { targets: [target('clitoris')] }), 10, false);
+  previewEntries = Object.keys(result.snapshot.events).map(function (key) {
+    return result.snapshot.events[key];
+  });
 
   assert.equal(result.changed, false);
   assert.deepEqual(plain(result.changedParts), ['clitoris']);
-  assert.deepEqual(plain(result.snapshot), plain(before));
+  assert.equal(previewEntries.length, 2);
+  assert.equal(previewEntries.some(function (entries) {
+    return entries[0].source === 'bridge-a' && entries[0].eventId === null &&
+      entries[0].target.part === 'clitoris' && entries[0].acceptedAt === 10;
+  }), true);
   assert.deepEqual(plain(engine.snapshot()), plain(before));
 });
 

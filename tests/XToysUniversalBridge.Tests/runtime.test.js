@@ -341,14 +341,76 @@ test('test returns and logs a preview without adapter output or state mutation',
   var subject = createSubject(0);
   var before = copy(subject.runtime.snapshot());
   var result = subject.runtime.handle(payload('test', {
-    targets: [target('clitoris', { intensity: 100 })]
+    source: 'preview-source',
+    sequence: 7,
+    targets: [target('genitals', {
+      intensity: 100,
+      frequency: 67,
+      rotateSpeed: 80,
+      rotateDirection: 'counterclockwise'
+    })]
   }));
 
   assert.equal(result.ok, true);
-  assert.ok(result.preview);
+  assert.deepEqual(copy(result.preview.slots.slice(0, 3).map(function (slot) {
+    return {
+      id: slot.id,
+      value: slot.value,
+      frequency: slot.frequency,
+      direction: slot.direction,
+      winnerSource: slot.transientWinner && slot.transientWinner.source,
+      winnerEventId: slot.transientWinner && slot.transientWinner.eventId,
+      winnerPart: slot.transientWinner && slot.transientWinner.target.part
+    };
+  })), [
+    { id: 1, value: 48, frequency: 67, direction: null, winnerSource: 'preview-source', winnerEventId: null, winnerPart: 'genitals' },
+    { id: 2, value: 40, frequency: 0, direction: null, winnerSource: 'preview-source', winnerEventId: null, winnerPart: 'genitals' },
+    { id: 3, value: 24, frequency: 0, direction: 'counterclockwise', winnerSource: 'preview-source', winnerEventId: null, winnerPart: 'genitals' }
+  ]);
   assert.equal(subject.logs.length, 1);
+  assert.deepEqual(subject.logs[0], copy(result.preview));
   assert.deepEqual(subject.calls, []);
   assert.deepEqual(copy(subject.runtime.snapshot()), before);
+});
+
+test('updates for absent stopped or expired events are ignored without creating output', function () {
+  var subject = createSubject(0);
+  var absentUpdate = {
+    eventId: 'missing',
+    sequence: 2,
+    targets: [target('clitoris', { intensity: 100, durationMs: 100 })]
+  };
+
+  assert.equal(subject.runtime.handle(payload('update', absentUpdate)).changed, false);
+  assert.deepEqual(subject.calls, []);
+  assert.deepEqual(copy(subject.runtime.snapshot().events), {});
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'stopped', sequence: 1,
+    targets: [target('clitoris', { intensity: 80, durationMs: 100 })]
+  }));
+  subject.runtime.handle(payload('stop', { eventId: 'stopped' }));
+  subject.calls.length = 0;
+  assert.equal(subject.runtime.handle(payload('update', {
+    eventId: 'stopped', sequence: 2,
+    targets: [target('clitoris', { intensity: 100, durationMs: 100 })]
+  })).changed, false);
+  assert.deepEqual(subject.calls, []);
+  assert.deepEqual(copy(subject.runtime.snapshot().events), {});
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'expired', sequence: 1,
+    targets: [target('clitoris', { intensity: 80, durationMs: 100 })]
+  }));
+  subject.loaded.setNow(100);
+  subject.runtime.tick();
+  subject.calls.length = 0;
+  assert.equal(subject.runtime.handle(payload('update', {
+    eventId: 'expired', sequence: 2,
+    targets: [target('clitoris', { intensity: 100, durationMs: 100 })]
+  })).changed, false);
+  assert.deepEqual(subject.calls, []);
+  assert.deepEqual(copy(subject.runtime.snapshot().events), {});
 });
 
 test('invalid messages are atomic and never change or increase output', function () {
@@ -477,6 +539,49 @@ test('a failed middle-slot dispatch does not block later slots and retries only 
   subject.calls.length = 0;
   subject.runtime.tick();
   assert.deepEqual(subject.calls, []);
+});
+
+test('a partial failed pulse dispatch is fully reasserted when output returns to the last successful tuple', function () {
+  var hardware = {};
+  var failNextSlotOne = false;
+  var subject = createSubject(0, function (slotOutput, transition) {
+    if (slotOutput.id !== 1) {
+      return;
+    }
+    hardware.value = slotOutput.value;
+    if (failNextSlotOne) {
+      failNextSlotOne = false;
+      throw new Error('partial slot write');
+    }
+    hardware.frequency = slotOutput.frequency;
+    hardware.direction = slotOutput.direction;
+    hardware.rampSeconds = transition.rampSeconds;
+    hardware.generation = slotOutput.generation;
+  });
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'pulse-retry', sequence: 1,
+    targets: [target('clitoris', {
+      effect: 'pulse', intensity: 80, frequency: 70, durationMs: 1000,
+      pulseOnMs: 100, pulseOffMs: 100, rampUpMs: 200, rampDownMs: 300
+    })]
+  }));
+  assert.deepEqual(hardware, {
+    value: 40, frequency: 70, direction: null, rampSeconds: 0.2, generation: 1
+  });
+
+  subject.loaded.setNow(100);
+  failNextSlotOne = true;
+  subject.runtime.tick();
+  assert.equal(hardware.value, 0);
+  subject.calls.length = 0;
+
+  subject.loaded.setNow(200);
+  assert.equal(subject.runtime.tick(), 2);
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2]);
+  assert.deepEqual(hardware, {
+    value: 40, frequency: 70, direction: null, rampSeconds: 0.2, generation: 3
+  });
 });
 
 test('stopAll continues past a failed slot and the next tick retries only that zero', function () {

@@ -252,6 +252,8 @@ var xtoysBridgeTestSlot;
       stopRetryPending = false;
       return 1;
     } catch (error) {
+      stopped = false;
+      stopRetryPending = false;
       reportError('adapter_apply_error', error, adapter);
       return 0;
     }

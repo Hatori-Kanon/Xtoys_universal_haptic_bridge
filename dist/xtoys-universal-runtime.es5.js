@@ -15,6 +15,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       ? value
       : JSON.parse(JSON.stringify(value));
   };
+  ns.compositeKey = function (parts) {
+    return JSON.stringify(parts);
+  };
   ns.nowMs = function () { return new Date().getTime(); };
   ns.createDefaultConfig = function () {
     var groups = {
@@ -506,18 +509,17 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 }(XTHB));
 (function (ns) {
   var hasOwn = Object.prototype.hasOwnProperty;
-  var separator = '\u001f';
 
   function eventKey(source, eventId) {
-    return source + separator + eventId;
+    return ns.compositeKey([source, eventId]);
   }
 
   function baselineKey(source, part) {
-    return source + separator + part;
+    return ns.compositeKey([source, part]);
   }
 
   function sourceKey(source) {
-    return separator + source;
+    return ns.compositeKey([source]);
   }
 
   function copy(value) {
@@ -570,12 +572,23 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       engine.events = events;
     }
 
-    function result(changed, parts, nextBaseline, nextEvents, nextGeneration) {
+    function result(changed, parts, nextBaseline, nextEvents, nextGeneration, ignoredReason) {
       return {
         changed: changed,
         changedParts: parts,
-        snapshot: snapshot(nextBaseline, nextEvents, nextGeneration)
+        snapshot: snapshot(nextBaseline, nextEvents, nextGeneration),
+        ignoredReason: ignoredReason || null
       };
+    }
+
+    function hasActiveEntry(entries, nowMs) {
+      var index;
+      for (index = 0; index < entries.length; index += 1) {
+        if (entries[index].expiresAt > nowMs) {
+          return true;
+        }
+      }
+      return false;
     }
 
     function completeEvent(message, nowMs, nextGeneration) {
@@ -602,6 +615,10 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var parts = [];
       var nextGeneration;
 
+      if (message.command === 'update' &&
+          (!hasOwn.call(events, key) || !hasActiveEntry(current, nowMs))) {
+        return result(false, [], baseline, events, generation, 'absent_event');
+      }
       if (hasOwn.call(events, key) && message.sequence <= current[0].sequence) {
         return result(false, [], baseline, events, generation);
       }
@@ -727,6 +744,29 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       return result(changed, parts, nextBaseline, events, nextGeneration);
     }
 
+    function applyTest(message, nowMs) {
+      var nextEvents = copy(events);
+      var nextGeneration = generation;
+      var entries = [];
+      var index;
+      if (message.targets.length > 0) {
+        nextGeneration += 1;
+        for (index = 0; index < message.targets.length; index += 1) {
+          entries.push({
+            source: message.source,
+            eventId: null,
+            sequence: message.sequence,
+            acceptedAt: nowMs,
+            expiresAt: nowMs + message.targets[index].durationMs,
+            generation: nextGeneration,
+            target: copy(message.targets[index])
+          });
+        }
+        nextEvents[ns.compositeKey(['preview', message.source, nextGeneration])] = entries;
+      }
+      return result(false, targetParts(message.targets), baseline, nextEvents, nextGeneration);
+    }
+
     engine.baseline = baseline;
     engine.events = events;
     engine.snapshot = function () {
@@ -765,7 +805,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         return engine.clearAll(dryRun === true);
       }
       if (message.command === 'test') {
-        return result(false, targetParts(message.targets), baseline, events, generation);
+        return applyTest(message, nowMs);
       }
       return result(false, [], baseline, events, generation);
     };
@@ -854,8 +894,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
   function contributionIdentity(entry, kind, leafPart) {
     var eventId = entry.eventId === undefined || entry.eventId === null ? '' : entry.eventId;
-    return kind + '\u001f' + (entry.source || '') + '\u001f' + eventId + '\u001f' +
-      entry.target.part + '\u001f' + leafPart;
+    return ns.compositeKey([
+      kind, entry.source || '', eventId, entry.target.part, leafPart
+    ]);
   }
 
   function candidate(entry, type, routeWeight, groupWeight, multiplier, identity) {
@@ -1159,8 +1200,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var physicalSlot = copy(slot);
       var failure;
       tuple.rampSeconds = transition.rampSeconds;
-      if (!force && sameTuple(lastTuples[slot.id], tuple)) {
-        delete pendingDispatches[slot.id];
+      if (!force && pendingDispatches[slot.id] === undefined && sameTuple(lastTuples[slot.id], tuple)) {
         return { changed: false, failure: null };
       }
       if (generationFloors[slot.id] === undefined) {
@@ -1283,6 +1323,14 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
       expired = engine.expire(atMs, false);
+      if (applied.ignoredReason === 'absent_event' && !expired.changed) {
+        return {
+          ok: true,
+          changed: false,
+          changedSlots: 0,
+          dispatchFailures: []
+        };
+      }
       dispatched = dispatch(atMs, expired.changedParts);
       reportFailures(dispatched.failures);
       return {
@@ -1697,6 +1745,8 @@ var xtoysBridgeTestSlot;
       stopRetryPending = false;
       return 1;
     } catch (error) {
+      stopped = false;
+      stopRetryPending = false;
       reportError('adapter_apply_error', error, adapter);
       return 0;
     }
