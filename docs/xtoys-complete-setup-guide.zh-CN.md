@@ -73,10 +73,10 @@
 
 ### 1. 新建、加载并连接独立 Script
 
-1. 打开官方的 [My Scripts](https://guide.xtoys.app/script-creation/overview.html) 页面，点击 `+` 新建 Script。**XToys 官方行为**：官方 Overview 明确写明从 My Scripts 的 `+` 创建 Script。
+1. 打开 XToys 应用，在侧边栏进入 My Scripts，再点 `+` 新建 Script。**XToys 官方行为**：官方 [Script Creation Overview](https://guide.xtoys.app/script-creation/overview.html) 说明从 My Scripts 的 `+` 创建 Script；这个 Guide 页面是操作依据，不是 XToys 应用入口。
 2. 在 General 页面先添加 Webhook 工具 Block，再添加这份配置实际需要的 Toy/输出 Block。点击 Add Block、选择 Block 类型；Webhook 的 Private/Shared 类型与设备类型均按你的真实连接选择。**XToys 官方行为**：General 页面用于选择 Script 要控制或交互的 Block，且 Action 的可选项取决于已连接的 Block（[Overview](https://guide.xtoys.app/script-creation/overview.html)、[Definitions](https://guide.xtoys.app/script-creation/definitions.html)）。所以先连 Block，后配 Action；找不到一个 Action 时，先检查它所需的 Block 是否已添加。
-3. 保存 Script 后，将它作为**独立 Script**加载到当前 XToys 会话，连接实际 Toy/输出 Block，再由操作人员手动启动和停止。官方说明：单一 Tool 的 Script *可以*嵌入 Tool；连接多个 Tool 时会作为可手动开关的独立 Block（[Overview](https://guide.xtoys.app/script-creation/overview.html)）。本手册选择独立 Script，嵌入 Tool 不是必选步骤。
-4. 若当前界面的加载、连接或启动按钮名称与上句不同，按 **当前界面核对** 记录实际路径；不要把旧界面或其他 Script 的按钮名称套用到这里。
+3. 保存后按 [Using Scripts](https://guide.xtoys.app/getting-started/using-scripts.html) 的公开流程操作：在 My Scripts 选中它并点 `Load Script`，然后在会话中的 Script Block 使用 plug（连接）按钮连接所需 Block，使用 play（播放）按钮启动。需要停止时由操作人员手动停止。官方还说明单一 Tool 的 Script 可以选择嵌入；本手册选择不嵌入的独立 Script。
+4. `Load Script`、plug 与 play 是 Using Scripts 当前公开说明中的按钮；除此之外的布局、设备列表、停止按钮位置或当前界面出现差异时，按 **当前界面核对** 记录实际路径，不要从 Guide Overview 的链接地址推断应用入口。
 
 ### 2. 安装运行时与配置变量
 
@@ -155,8 +155,9 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 **Initial Actions（顺序不可调换）：**
 
 1. 对 `01`–`16` 的每个输出 Block，将当前强度或当前旋转速度设为 `0`；对启用频率的强度输出也将频率设为 `0`。
-2. 添加 Custom JavaScript Action：`xtoysBridgeInit();`。
-3. 添加启动 Job 的 UI Action，启动 `xthb-scheduler`。
+2. 添加 Variable Action，把 `xthb-config-json` 设置为“完整 16 槽配置”一节中整份 JSON 序列化后的完整 JSON 字符串。Variables 可由 Variable Action 定义/更新，而 Initial Actions 可设置初始变量值（[Definitions](https://guide.xtoys.app/script-creation/definitions.html)、[Overview](https://guide.xtoys.app/script-creation/overview.html)）；不要只在编辑说明中创建变量而漏掉这一步。
+3. 添加 Custom JavaScript Action：`xtoysBridgeInit();`。
+4. 添加启动 Job 的 UI Action，启动 `xthb-scheduler`。
 
 **Final Actions（顺序不可调换）：**
 
@@ -173,12 +174,34 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 
 | 函数 | 何时调用 | 结果/边界 |
 | --- | --- | --- |
-| `xtoysBridgeInit()` | Initial Actions 的第 2 步 | 读取 `xthb-config-json`、验证配置、归零启用槽并初始化运行时。 |
+| `xtoysBridgeInit()` | Initial Actions 的第 3 步 | 读取 `xthb-config-json`、验证配置、归零启用槽并初始化运行时。 |
 | `xtoysBridgeHandle(payload)` | 固定 Webhook Global Trigger | 处理映射出的完整内层 JSON 字符串。 |
 | `xtoysBridgeTick()` | `xthb-scheduler` 的 START Step | 执行一次调度检查并返回改变的槽数。 |
 | `xtoysBridgeStopAll()` | Final Actions 的第 1 步 | 清空运行状态，并以零渐变尝试归零每个启用槽；可再次调用以重试失败槽。 |
 | `xtoysBridgeReloadConfig()` | 准备切换整份配置时 | 重新读取 `xthb-config-json`；不要把它当成每条游戏消息的处理函数。 |
 | `xtoysBridgeTestSlot()` | 人工逐槽低输出检查 | `xtoysBridgeTestSlot()` 会产生真实硬件输出；实际签名为 `xtoysBridgeTestSlot(slotId, value)`，仅对已启用的 1–16 槽接受 0–100 值。与只预览、不驱动物理输出的协议 `test` 不同。 |
+
+### 9. 建立临时人工验收入口
+
+粘贴运行时的 JS 区域只负责定义并在 Script 启动时加载函数，不能在运行期间手动执行函数。B/C 阶段需要调用 `xtoysBridgeTestSlot()` 或 `xtoysBridgeReloadConfig()` 时，先建立下面的临时入口。其机制来自 XToys 官方说明：Controls 可动态改变 XToys variables，Global Triggers 可在整个 Script 运行期根据变量状态触发 Action，Custom JavaScript 可用 `getVariable()` 读取这些变量（[Overview](https://guide.xtoys.app/script-creation/overview.html)、[Definitions](https://guide.xtoys.app/script-creation/definitions.html)、[JavaScript](https://guide.xtoys.app/script-creation/javascript.html)）。
+
+1. 在 Controls 页面创建两个输入控件，分别绑定 XToys variables `xthb-test-slot` 和 `xthb-test-value`；槽号填 1–16，值从经过现场确认的低值开始。再创建两个临时触发控件，分别绑定 `xthb-run-test-slot` 和 `xthb-run-reload-config`。建议使用按下后会回到 off 的 Push button。
+2. 在 Global Triggers 页面创建一个临时变量 Trigger：当 `xthb-run-test-slot` 为真时，执行一个 Custom JavaScript Action，精确内容为：
+
+   ```js
+   xtoysBridgeTestSlot(getVariable('xthb-test-slot'), getVariable('xthb-test-value'));
+   ```
+
+   运行 Script，在 Controls 中填写 slot/value 后按临时测试控件。预期只有该已启用槽收到一次真实输出；值设为 `0` 后再触发可直接写零，但若仍有协议事件或 baseline，下一次 scheduler tick 可能恢复输出。
+3. 再创建一个临时变量 Trigger：当 `xthb-run-reload-config` 为真时，执行另一个 Custom JavaScript Action，精确内容为：
+
+   ```js
+   xtoysBridgeReloadConfig();
+   ```
+
+   在 Initial Actions 的 Variable Action 或其源配置中更新完整 JSON 后，重新运行相应 Variable Action，再按 Controls 中的临时 reload 控件。预期日志显示新配置已读取；随后用低值消息核对目标槽。
+4. Controls 的具体控件标题、变量 Trigger 的比较方式、Trigger 输出变量和 Action 编辑按钮会随当前 UI 而变，官方公开页没有固定这些文案；全部按 **当前界面核对**。只采用能明确绑定上述变量并能在运行期改变它们的实际选项。
+5. A–D 验收结束后，删除或禁用这四个临时 Control 和两个临时 Global Trigger；确认正常运行只保留 Webhook Trigger。若保留验收入口，任何能操作 Script 的人都可能触发真实硬件输出。
 
 ## 设备、逻辑部位与 16 槽规划
 
@@ -233,7 +256,7 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 
 字段说明（均为 **XTHB 项目约定**）：
 
-- `logLevel` 只能是 `off`、`errors` 或 `debug`；初次验收使用 `errors`，便于记录拒绝原因。
+- `logLevel` 只能是 `off`、`errors` 或 `debug`；常规配置使用 `errors`。A 阶段为了看见成功的协议预览会临时改为 `debug`，验完必须恢复 `errors`。
 - `globalMultiplier` 是非负的总路由倍率。一个组目标经过的有效值是游戏值 × 组权重 × 槽 `routes` 权重 × 此倍率，最后夹到 0–100；它不是 XToys 的设备最大值设置。
 - `groups` 必须恰有 `genitals`、`lower_body`、`double_hole`、`whole_body`、`mixed` 五键。每个组内的 0–1 权重只在游戏发送该组名时展开到叶子部位。
 - 每个 `slots` 项必须有连续且唯一的 `id`、布尔 `enabled`、`intensity` 或 `rotation` 的 `type`、布尔 `frequencyEnabled` 和叶子部位到 0–1 的 `routes`。
@@ -243,6 +266,29 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 ## 六类外层 Webhook 示例
 
 以下均为可解析的外层 Webhook JSON；`action` 固定为 `xtoys_game_bridge`，`payload` 是经转义的内层 JSON 字符串。示例标识均为虚构文本，不含 Webhook URL、ID 或 Auth Token。发送时仍须按 [Webhook 官方说明](https://guide.xtoys.app/tools/webhook.html) 在私密位置使用自己的地址和凭据。
+
+### POST 地址与认证模板
+
+`<WEBHOOK_ID>` 和 `<AUTH_TOKEN>` 都是用户必须自行替换的占位符，不是真实值；不要把替换后的值提交到仓库或贴进公开日志。Private Webhook 的可执行请求结构如下：
+
+```http
+POST https://webhook.xtoys.app/<WEBHOOK_ID>
+Content-Type: application/json
+
+{"action":"xtoys_game_bridge","payload":"{\"protocolVersion\":1,\"command\":\"test\",\"source\":\"post-template\",\"targets\":[{\"part\":\"clitoris\",\"intensity\":10}]}"}
+```
+
+Shared Webhook 使用相同 POST 地址和 JSON body，并额外加入官方要求的 Authorization header：
+
+```http
+POST https://webhook.xtoys.app/<WEBHOOK_ID>
+Content-Type: application/json
+Authorization: Bearer <AUTH_TOKEN>
+
+{"action":"xtoys_game_bridge","payload":"{\"protocolVersion\":1,\"command\":\"test\",\"source\":\"post-template\",\"targets\":[{\"part\":\"clitoris\",\"intensity\":10}]}"}
+```
+
+成功观察点是对应 Webhook Global Trigger 确实运行，并在 A 阶段看见 `XTHB debug:` 预览日志；这比只看到发送工具完成更可靠。失败观察点包括发送端 HTTP/认证错误、Shared 请求缺少或错填 Bearer token、Trigger 没运行，或 XTHB errors/debug 日志报告 payload 被拒绝。Webhook 地址、POST JSON 和 Shared Authorization 的依据均来自 [Webhook 官方说明](https://guide.xtoys.app/tools/webhook.html)。
 
 ### 1. `set_baseline`：建立基线
 
@@ -282,7 +328,27 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 }
 ```
 
-### 5. `stop_all`：全停但不清除 baseline sequence 栅栏
+### 5. 空 `set_baseline`：用更高 sequence 清除该来源基线
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"set_baseline\",\"source\":\"manual-demo\",\"sequence\":2,\"targets\":[]}"
+}
+```
+
+### 6. 在 `stop_all` 前重新建立可观察活动 baseline
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"set_baseline\",\"source\":\"manual-demo\",\"sequence\":3,\"targets\":[{\"part\":\"vagina\",\"intensity\":12,\"frequency\":10,\"rotateSpeed\":10,\"rotateDirection\":\"clockwise\",\"rampUpMs\":0,\"rampDownMs\":0}]}"
+}
+```
+
+先等待至少一个 scheduler tick，并按真实设备确认这个 baseline 已产生可观察的低值活动输出，再发送下一条 `stop_all`；不要让 `stop_all` 面对空状态。
+
+### 7. `stop_all`：全停但不清除 baseline sequence 栅栏
 
 ```json
 {
@@ -291,9 +357,29 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 }
 ```
 
-`stop_all` 清除所有来源的当前基线和有限事件，并归零已启用槽；但它保留每个 `source` 已接受的 baseline sequence 栅栏。因此不能用先前的 `sequence: 1` 恢复 `manual-demo` 基线，必须发送更高的序号（例如 `sequence: 3`）。这是 XTHB 状态机语义，不是 XToys Webhook 的通用功能。
+`stop_all` 清除所有来源的当前基线和有限事件，并归零已启用槽；但它保留每个 `source` 已接受的 baseline sequence 栅栏。下面先重发相同的 `sequence: 3`，验证状态层将其忽略并保持零；parser 仍会认为这条消息格式有效。
 
-### 6. `test`：只做协议预览
+### 8. `stop_all` 后重发相同 sequence：格式有效但应被栅栏忽略
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"set_baseline\",\"source\":\"manual-demo\",\"sequence\":3,\"targets\":[{\"part\":\"vagina\",\"intensity\":12,\"frequency\":10,\"rotateSpeed\":10,\"rotateDirection\":\"clockwise\",\"rampUpMs\":0,\"rampDownMs\":0}]}"
+}
+```
+
+### 9. `stop_all` 后用更高 sequence 恢复
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"set_baseline\",\"source\":\"manual-demo\",\"sequence\":4,\"targets\":[{\"part\":\"vagina\",\"intensity\":12,\"frequency\":10,\"rotateSpeed\":10,\"rotateDirection\":\"clockwise\",\"rampUpMs\":0,\"rampDownMs\":0}]}"
+}
+```
+
+只有大于已接受 baseline sequence 的序号才能恢复。相同/旧序号保持物理零，更高 `sequence: 4` 恢复低值输出；这是 XTHB 状态机语义，不是 XToys Webhook 的通用功能。
+
+### 10. `test`：只做协议预览
 
 ```json
 {
@@ -311,15 +397,15 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 ### A. 无设备：初始化、调度器和协议预览
 
 - **前置条件**：不连接真实输出；配置已经通过 `XTHB.validateConfig(config)`；16 个输出 Job、Initial Actions、Final Actions 和 `xthb-scheduler` 已保存。
-- **动作**：启动 Script，确认 `xtoysBridgeInit()` 没有配置错误；观察 `xthb-scheduler` 的 0.1 秒循环；发送上方 `test` Webhook。
-- **预期结果**：`test` 仅被解析/记录，不能启动物理输出 Job，设备也未连接；停止 Script 后 Final Actions 执行。
+- **动作**：先在完整配置中把 `logLevel` 从常规的 `errors` 临时改为 `debug`，通过临时入口调用 `xtoysBridgeReloadConfig()`（尚未初始化时则重新启动并由 `xtoysBridgeInit()` 生效）。确认初始化无配置错误并观察 `xthb-scheduler` 的 0.1 秒循环；再发送上方协议 `test` Webhook，观察 `XTHB debug:` 开头的预览日志。完成预览后把 `logLevel` 改回 `errors`，重新执行配置 Variable Action，并调用 `xtoysBridgeReloadConfig()` 生效。
+- **预期结果**：`test` 仅被解析并产生 `XTHB debug:` 预览日志，不能启动物理输出 Job，设备也未连接；恢复 `errors` 后成功预览日志不再输出，错误仍会记录；停止 Script 后 Final Actions 执行。
 - **失败即停止**：初始化错误、调度 Job 不循环、`test` 驱动了输出 Job，或无法确认停止动作时停止验收。
 - **记录栏**：日期 ______；Script 修订 ______；初始化日志 ______；调度观察 ______；`test` 结果 ______。
 
 ### B. 单槽低输出：真实硬件逐槽核对
 
 - **前置条件**：先在 XToys 把最大值设为使用者认可的低安全范围；一次只连接当前测试槽；当前槽必须 `enabled: true`，且 A 已通过。
-- **动作**：对每个已启用槽单独调用 `xtoysBridgeTestSlot(slotId, value)`，从低值开始；`xtoysBridgeTestSlot(slotId, value)` 只用于强度、速度与归零。它固定写入 `frequency: 0` 和 `direction: null`，所以强度槽只确认强度、Rotate 槽只确认速度，并在每次确认后调用 `xtoysBridgeTestSlot(slotId, 0)`。频率槽改用带非零 `frequency` 的低值 `play` 或 `set_baseline` 验证频率 Action；Rotate 方向改用低值 `play` 的显式方向，并在事件到期前用 `update` 验证反向。最后手动停止 Script。
+- **动作**：通过“临时人工验收入口”对每个已启用槽调用 `xtoysBridgeTestSlot(slotId, value)`，从低值开始；`xtoysBridgeTestSlot(slotId, value)` 只用于强度、速度与归零。它固定写入 `frequency: 0` 和 `direction: null`，所以强度槽只确认强度、Rotate 槽只确认速度。频率槽改用带非零 `frequency` 的低值 `play` 或 `set_baseline` 验证；Rotate 方向改用低值 `play` 的显式方向，`update` 必须在有限事件到期前发送以验证反向。每次用 `play` 或 `update` 完成频率/方向检查后，立即发送匹配同一 `source + eventId` 的 `stop`；若改用 `set_baseline`，则发送更高 sequence 的空 baseline，不能用 `stop` 清 baseline。随后等待至少一个 scheduler tick，按真实设备确认物理归零，才允许换槽或断开。只调用 `xtoysBridgeTestSlot(slotId, 0)` 不足以清除活动事件或 baseline，下一 tick 仍可能恢复输出。最后手动停止 Script。
 - **预期结果**：只有当前连接的槽有真实输出；频率只由协议低值消息验证，Rotate 速度由 TestSlot 验证、方向由协议消息验证；Final Actions 将当前设备实际归零。
 - **失败即停止**：非当前槽输出、值无法控制、频率/方向不符、归零失败或停止无法立刻执行时停止。
 - **记录栏**：槽号 ______；低值 ______；强度/频率/速度/方向观察 ______；Final Actions 零值确认 ______；设备 Action JSON ______。
@@ -327,7 +413,7 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 ### C. 多槽路由：字段隔离、共享槽、权重与禁用槽
 
 - **前置条件**：B 已完成；仅连接本次要核对的槽；最大值仍保持低安全范围。
-- **动作**：启用槽 01（强度/频率）和槽 03（Rotate），发送含 `intensity`、`frequency`、`rotateSpeed`、`rotateDirection` 的 `play`；确认每槽只消费自己的字段。再分别发送 `clitoris` 与 `vagina` 目标，确认它们通过槽 01 的共享 `routes` 进入同一物理槽的仲裁。调整一个 0–1 路由权重或 `globalMultiplier` 后重新以低值发送，确认有效输出按乘积变化；临时给一个禁用槽加入已知 `routes`（例如槽 04 的 `clitoris: 1`），保持 `enabled: false` 并调用 `xtoysBridgeReloadConfig()`，再发送同一目标的低值消息，确认该槽仍不启动输出 Job。随后移除临时 route、恢复原配置并再次 reload。
+- **动作**：启用槽 01（强度/频率）和槽 03（Rotate），发送含 `intensity`、`frequency`、`rotateSpeed`、`rotateDirection` 的低值 `play`；确认每槽只消费自己的字段后，立即发送匹配 `stop`，等待至少一个 scheduler tick 并确认真实设备归零。再分别发送 `clitoris` 与 `vagina` 目标，确认它们通过槽 01 的共享 `routes` 进入同一物理槽的仲裁；每次都用匹配 `stop` 清理。调整一个 0–1 路由权重或 `globalMultiplier` 后，通过临时入口执行 `xtoysBridgeReloadConfig()`，重新以低值发送并确认有效输出按乘积变化，随后 stop/tick/物理归零。临时给一个禁用槽加入已知 `routes`（例如槽 04 的 `clitoris: 1`），保持 `enabled: false`，重新执行配置 Variable Action 并通过临时入口调用 `xtoysBridgeReloadConfig()`，再发送同一目标的低值消息，确认该槽仍不启动输出 Job。随后 stop/tick/物理归零，移除临时 route、恢复原配置并再次 reload。
 - **预期结果**：强度槽不把 `rotateSpeed` 当输出，旋转槽不把 `intensity` 当速度；共享部位不是相加，而是按上述胜者规则仲裁；权重和全局倍率生效，禁用槽不输出。
 - **失败即停止**：字段串槽、共享槽出现非预期叠加、禁用槽输出、或权重变化与记录不符时停止。
 - **记录栏**：槽 01 观察 ______；槽 03 观察 ______；共享路由胜者 ______；权重/倍率 ______；禁用槽确认 ______。
@@ -335,8 +421,8 @@ callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' })
 ### D. 完整协议：到期恢复与 sequence 栅栏
 
 - **前置条件**：C 已完成；仅连接当前验收槽；最大值保持低安全范围；每步都记录实际 Job/设备反馈再进入下一步。
-- **动作**：严格按此顺序发送：`set_baseline`（sequence 1）→ `play`（事件 sequence 1）→ 更高 sequence 的 `update`（2）→ 等待事件到期并调用调度 tick → 空 `set_baseline`（使用更高 sequence，例如 2）→ `stop_all` → 用更高 baseline sequence（例如 3）恢复基线 → 手动停止 Script。必要时使用 `stop` 示例单独验证事件移除。
-- **预期结果**：`update` 替换旧事件并反转所发方向；事件到期后恢复到当时基线；空 baseline 只清除该来源基线；`stop_all` 归零但保留 sequence 栅栏；旧 baseline sequence 被忽略，更高 sequence 可恢复；手动停止后 Final Actions 再次实际归零。
+- **动作**：严格按完整外层 JSON 的出现顺序发送：`set_baseline`（1）→ `play`（事件 1）→ `update`（事件 2）→ 等待到期/tick 并确认回到基线 → 匹配 `stop`（也可在另一次事件未到期时验证）→ 空 `set_baseline`（2）并确认零 → 重新建立活动 baseline（3），等待 tick 并确认有可观察的低值活动输出 → `stop_all` 并确认零 → 重发相同 baseline sequence（3）并确认仍为零 → 发送更高 baseline sequence（4）并确认恢复 → 空 baseline（5）、等待 tick 并确认物理归零 → 手动停止 Script。每一步物理归零后才允许换槽或断开。
+- **预期结果**：`update` 替换旧事件并反转所发方向；事件到期后恢复到当时基线；空 baseline 只清除该来源基线；`stop_all` 面对活动状态时归零并保留 sequence 栅栏；相同/旧 baseline sequence 的消息格式虽有效，但状态层忽略且保持零；更高 sequence 恢复；最后空 baseline 和 Final Actions 都得到真实归零确认。
 - **失败即停止**：到期不恢复、空 baseline 停止了不应停止的事件、`stop_all` 后旧序号仍恢复、较高序号无法恢复，或 Final Actions 未归零时停止。
 - **记录栏**：基线 ______；play/update ______；到期恢复 ______；空 baseline ______；stop_all ______；更高序号恢复 ______；手动停止 ______。
 

@@ -46,11 +46,9 @@
 
 ## 1. 建立唯一的 Webhook Global Trigger
 
-建立一个 Webhook Global Trigger，筛选外层 `action == xtoys_game_bridge`。在它的 Custom JavaScript Action 中只映射一个输入：
+建立一个 Webhook Global Trigger，筛选外层 `action == xtoys_game_bridge`。XToys 官方说明 Webhook 的 `action` 和其他键值会交给 Script，Global Trigger 可在 Script 全程响应；见 [Webhook](https://guide.xtoys.app/tools/webhook.html) 与 [Script Overview](https://guide.xtoys.app/script-creation/overview.html)。
 
-```text
-payload = {trigger-payload}
-```
+在 Custom JavaScript Action 的输入映射中，把当前 Webhook Trigger 实际提供的**完整 payload 值**映射为本地输入 `payload`。Trigger 输出变量的精确名称和映射控件标题未由公开指南固定，必须在当前 Action 编辑器中做 **当前界面核对**；不要硬编码假定它一定叫 `{trigger-payload}`，也不要拆分内层字段。
 
 内联 Custom JavaScript 内容必须是：
 
@@ -58,7 +56,7 @@ payload = {trigger-payload}
 xtoysBridgeHandle(payload);
 ```
 
-不要在 Trigger 中拆分协议字段，也不要用 `eval` 或把外层 `action` 改成游戏事件名。
+不要在 Trigger 中拆分协议字段，也不要用 `eval` 或把外层 `action` 改成游戏事件名。Private POST 地址模板为 `https://webhook.xtoys.app/<WEBHOOK_ID>`，请求头含 `Content-Type: application/json`；Shared Webhook 还需 `Authorization: Bearer <AUTH_TOKEN>`。两个尖括号值均为用户自行替换的占位符，不得填入仓库真实凭据。
 
 ## 2. 建立调度 Job
 
@@ -81,6 +79,8 @@ xtoysBridgeTick();
 - 仅当该槽是频率已启用的强度槽时，E-Stim 频率：`{xthb-slot-NN-frequency}`。
 - 仅对旋转槽添加顺时针方向 Action，条件为 `{xthb-slot-NN-direction-code} == 1`。
 - 仅对旋转槽添加逆时针方向 Action，条件为 `{xthb-slot-NN-direction-code} == -1`。
+
+上述设备 Action 的实际菜单名称、E-Stim 频率字段、Rotate 方向选项和生成 JSON 都不是公开 Guide 固定的 UI 契约，必须 **当前界面核对**。先按 [Definitions](https://guide.xtoys.app/script-creation/definitions.html) 在 General 连接所需 Block，再从当前 Action 选择器选实际出现的设备 Action；可按 [JavaScript](https://guide.xtoys.app/script-creation/javascript.html) 的 “Add XToys Action” 方法取得当前 JSON。
 
 下表列出 16 个 Job 的精确变量前缀和条件。将 `NN` 换成该行的两位编号，不要另起别名。
 
@@ -110,13 +110,14 @@ xtoysBridgeTick();
 在 Script 的 Initial Actions 中，按以下顺序配置：
 
 1. 对 `01`–`16` 的每个输出块，添加 UI Action，将当前强度或当前旋转速度设为 `0`；对每个频率已启用的强度输出，再将频率设为 `0`。
-2. 添加 Custom JavaScript Action：
+2. 添加 Variable Action，把 `xthb-config-json` 设置为本页完整 16 槽配置序列化后的完整 JSON 字符串。XToys Variables 由 Variable Action 定义/更新，Initial Actions 可设置初始变量（[Definitions](https://guide.xtoys.app/script-creation/definitions.html)、[Overview](https://guide.xtoys.app/script-creation/overview.html)）。
+3. 添加 Custom JavaScript Action：
 
    ```js
    xtoysBridgeInit();
    ```
 
-3. 添加启动 Job 的 UI Action，启动 `xthb-scheduler`。
+4. 添加启动 Job 的 UI Action，启动 `xthb-scheduler`。
 
 在 Script 的 Final Actions 中，顺序必须为：
 
@@ -141,6 +142,8 @@ xtoysBridgeTick();
 - `xtoysBridgeReloadConfig()`：重新读取 `xthb-config-json`；只在准备切换配置时调用。
 - `xtoysBridgeTestSlot(slotId, value)`：手动向一个已启用配置槽输出一次 0–100 值。它与协议命令 `test` 不同，后者不驱动硬件。
 
+全局 JavaScript 页面不是交互式控制台。需要人工调用 TestSlot/Reload 时，按[完整手册的临时人工验收入口](xtoys-complete-setup-guide.zh-CN.md)建立 Controls 与 Global Triggers；具体控件和变量 Trigger 文案按 **当前界面核对**，验收后删除或禁用临时入口。
+
 ## 6. 最终用户协助冒烟检查（待完成）
 
 此检查目前明确为 **待用户在 XToys 与实际硬件上完成**。自动化测试只验证构建产物、变量和 `updateJob` Action；它不代表真实设备已经验证成功。
@@ -151,8 +154,9 @@ xtoysBridgeTick();
 - [ ] 发送协议文档中的基线示例；确认强度与旋转基线、渐入时间和顺时针方向。
 - [ ] 发送 `play` 示例；确认强度变化和配置的 ramp 生效。
 - [ ] 发送较高 `sequence` 的方向 `update` 示例；确认旋转方向只在该更新后切换为逆时针。
+- [ ] TestSlot 只验证强度、Rotate 速度与归零；E-Stim 频率和 Rotate 方向只使用低值协议 `play`/`update` 验证。每次立即发送匹配 `stop`，等待至少一个 scheduler tick 并确认物理归零后，才换槽或断开；若使用 baseline，则用更高 sequence 的空 baseline 清理。
 - [ ] 等待有限事件到期并让调度 Job tick；确认输出按 ramp 恢复到最新基线，而不是归零或恢复旧状态。
-- [ ] 发送 `stop_all` 示例；确认所有已启用输出 Job 收到零值、零频率和无方向输出。
+- [ ] 在 `stop_all` 前重新建立可观察活动 baseline；发送 `stop_all` 后确认归零，再重发相同/旧 baseline sequence 确认被状态层忽略，最后用更高 sequence 确认恢复。
 - [ ] 停止 Script；确认 Final Actions 再次把强度、旋转速度和适用的频率显式归零。
 - [ ] 记录本次测试使用的 XToys Script 修订：`待填写`。
 - [ ] 导出并记录与本文示例不同的 XToys UI Action JSON（若无差异也写明“无”）：`待填写`。

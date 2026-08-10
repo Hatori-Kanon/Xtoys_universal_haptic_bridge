@@ -15,8 +15,11 @@
 - XTHB 的函数名、变量名、Job 名、配置结构和协议语义必须与仓库当前源码、测试和 `docs/xtoys-protocol-v1.md` 完全一致。
 - 主手册面向没有 XToys Script 编辑经验的读者，每一步包含页面、操作对象、精确输入、预期结果和失败处理。
 - 协议 `test` 只预览，不驱动硬件；`xtoysBridgeTestSlot()` 会驱动真实硬件。
+- `xtoysBridgeTestSlot()` 只验证强度、Rotate 速度与归零；频率必须以低值协议 `play`/`set_baseline` 验证，方向必须以低值协议 `play`/`update` 验证。协议输出后立即 `stop`，等待 scheduler tick 和物理归零才换槽或断开。
 - 运行时只设置当前输出，不修改设备最大强度或最大转速，不检测游戏进程或心跳。
 - `stop_all` 清空当前状态，但保留每个 `source` 的 baseline sequence 栅栏。
+- `stop_all` 后必须重发相同或旧 baseline sequence 以确认保持零，再用更高 sequence 恢复；Initial Actions 在硬件归零后以 Variable Action 写入完整 `xthb-config-json`，再初始化和启动调度器。
+- 人工调用通过临时 Controls 与 Global Triggers；A 阶段把 `logLevel` 临时设为 `debug` 观察 preview，完成后恢复 `errors`；所有动态控件和设备菜单均按当前界面核对。
 - 手册不得包含真实 Webhook ID、Shared Webhook Auth Token 或用户设备凭据。
 - 对真实设备测试必须采用逐槽、低输出、可立即手动停止的递进流程。
 
@@ -328,9 +331,9 @@ Expected: 三个新增测试 FAIL，因为尚无完整配置和六个外层 Webh
 按以下固定顺序写清每个阶段的前置条件、动作、预期结果、失败即停止条件和记录栏：
 
 1. A 无设备：初始化、调度器、协议 test 预览。
-2. B 单槽低输出：一次一个槽，用 `xtoysBridgeTestSlot()` 分别确认强度、频率、Rotate 速度与方向，再停止 Script 验证 Final Actions。
+2. B 单槽低输出：一次一个槽，`xtoysBridgeTestSlot()` 只确认强度、Rotate 速度与归零；频率用低值协议 `play` 或 `set_baseline`，方向用低值协议 `play`/`update`。每次协议输出后立即 `stop`，等待 scheduler tick 和物理归零才换槽或断开。
 3. C 多槽路由：强度/旋转字段隔离、多个部位共享槽、权重与禁用槽。
-4. D 完整协议：`set_baseline` → `play` → 更高 sequence 的 `update` → 到期恢复 → 空 baseline → `stop_all` → 更高 baseline sequence 恢复 → 手动停止 Script。
+4. D 完整协议：`set_baseline` → `play` → 更高 sequence 的 `update` → 到期恢复 → 空 baseline → 重新建立活动 baseline → `stop_all` → 重发相同/旧 sequence（保持零）→ 更高 baseline sequence 恢复 → 空 baseline、scheduler tick、物理归零 → 手动停止 Script。
 
 真实输出步骤必须提示先把 XToys 最大值设为用户认可的低安全范围，并且一次只连接当前测试槽。
 

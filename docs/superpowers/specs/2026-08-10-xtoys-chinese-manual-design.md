@@ -75,7 +75,7 @@
 ### 第三部分：创建 Script 基础结构
 
 1. 新建 XToys Script，并建议使用固定名称。
-2. 打开全局 JavaScript 页面，粘贴完整 `dist/xtoys-universal-runtime.es5.js`。
+2. 打开 Script 编辑器顶部的 `JS` 区域，粘贴完整 `dist/xtoys-universal-runtime.es5.js`；此区域只在 Script 启动时加载定义，人工验收改用临时 Controls 与 Global Triggers 入口。
 3. 创建 `xthb-config-json` Script 变量。
 4. 解释全局 JavaScript 与 Action 内的 Custom JavaScript 的区别：函数只能在全局页面定义，Action 中只调用函数。
 
@@ -122,7 +122,7 @@
 
 ### 第九部分：Initial Actions 和 Final Actions
 
-1. Initial Actions 先通过 XToys UI 将所有实际连接输出归零，再调用 `xtoysBridgeInit()`，最后启动 `xthb-scheduler`。
+1. Initial Actions 先通过 XToys UI 将所有实际连接输出归零，再用 Variable Action 设置 `xthb-config-json` 的完整 JSON，然后调用 `xtoysBridgeInit()`，最后启动 `xthb-scheduler`。
 2. Final Actions 先调用 `xtoysBridgeStopAll()`，再停止调度器，然后通过 XToys UI 再次显式归零所有实际连接输出。
 3. 说明显式 UI 归零是 JavaScript 失败时的安全背板，不能省略。
 4. 说明这些动作只修改当前输出，不修改最大强度或最大转速。
@@ -133,16 +133,16 @@
 
 #### 阶段 A：无设备验证
 
-- 暂不连接真实输出，启动 Script。
+- 暂不连接真实输出；把 `logLevel` 临时设为 `debug`，通过 `xtoysBridgeReloadConfig()`（或首次启动的 `xtoysBridgeInit()`）生效后启动 Script。
 - 确认 `xtoysBridgeInit()` 成功，配置 JSON 没有错误日志。
 - 确认调度 Job 周期运行。
-- 调用协议 `test`，确认只有预览或日志，不启动物理输出 Job。
+- 调用协议 `test`，确认只有 `XTHB debug:` 预览日志、不启动物理输出 Job；验收后将 `logLevel` 恢复为 `errors` 并通过 `xtoysBridgeReloadConfig()` 生效。
 
 #### 阶段 B：单槽低输出验证
 
 - 每次只启用和连接一个槽。
-- 使用 `xtoysBridgeTestSlot(slotId, value)` 从低值测试实际输出。
-- 分别验证强度、E-Stim 频率、Rotate 速度与两个方向。
+- `xtoysBridgeTestSlot(slotId, value)` 只用于强度、Rotate 速度与归零；它不验证频率或方向。
+- 频率使用低值协议 `play` 或 `set_baseline` 验证，方向使用低值协议 `play`/`update` 验证；每次立即发送匹配的 `stop`（baseline 则用更高 sequence 的空 baseline），等待至少一个 scheduler tick 并确认物理归零后才换槽或断开。
 - 停止 Script，确认 Final Actions 将实际设备归零。
 
 #### 阶段 C：多槽和路由验证
@@ -161,9 +161,9 @@
 3. `update`：用更高 sequence 更新攻击并切换 Rotate 方向。
 4. 等待事件到期：确认输出按渐变回到最新基线。
 5. `set_baseline` 空快照：确认只清除该来源基线。
-6. `stop_all`：确认所有已启用槽立即收到零值。
-7. 使用更高 baseline sequence 恢复：确认 sequence 栅栏行为正确。
-8. 手动停止 Script：确认 Final Actions 再次归零。
+6. 重新建立活动 baseline、等待 tick 并确认有低值输出后发送 `stop_all`：确认所有已启用槽立即收到零值。
+7. `stop_all` 后重发相同或旧 baseline sequence：确认状态层忽略并保持零；使用更高 baseline sequence 恢复。
+8. 用更高 sequence 的空 baseline 清理、等待 scheduler tick 并确认物理归零后，手动停止 Script：确认 Final Actions 再次归零。
 
 ### 第十一部分：故障排查
 
