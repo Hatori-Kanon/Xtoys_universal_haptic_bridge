@@ -41,6 +41,12 @@ function parse(runtime, payload, config) {
   return runtime.XTHB.parseMessage(JSON.stringify(payload), config || validConfig());
 }
 
+function assertRejectedRetrigger(result, code) {
+  assert.equal(result.ok, false);
+  assert.equal(result.code, code);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'message'), false);
+}
+
 test('parses a valid play message into the complete normalized target shape', function () {
   var runtime = loadRuntime();
   var result = parse(runtime, validPlay());
@@ -81,28 +87,138 @@ test('normalizes a complete adaptive retrigger profile without changing protocol
   assert.deepEqual(JSON.parse(JSON.stringify(result.message.targets[0].retrigger)), retrigger());
 });
 
+test('accepts adaptive retrigger values at inclusive boundaries', function () {
+  var runtime = loadRuntime();
+  var payload = validPlay();
+  var result;
+
+  payload.targets[0].durationMs = 150;
+  payload.targets[0].rampUpMs = 30;
+  payload.targets[0].rampDownMs = 20;
+  payload.targets[0].retrigger = retrigger({
+    minDropPercent: 0,
+    maxDropPercent: 100,
+    minRampUpMs: 30,
+    minRampDownMs: 20,
+    textureThresholdMs: 100,
+    quietResetMs: 101
+  });
+  result = parse(runtime, payload);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.message.targets[0].retrigger)), {
+    mode: 'adaptive',
+    minDropPercent: 0,
+    maxDropPercent: 100,
+    minRampUpMs: 30,
+    minRampDownMs: 20,
+    textureThresholdMs: 100,
+    quietResetMs: 101
+  });
+});
+
+test('rejects every adaptive retrigger value beyond its boundary', function () {
+  var runtime = loadRuntime();
+  var cases = [
+    { name: 'minimum drop below zero', values: { minDropPercent: -1 }, code: 'invalid_retrigger' },
+    { name: 'maximum drop above one hundred', values: { maxDropPercent: 101 }, code: 'invalid_retrigger' },
+    { name: 'minimum drop above maximum drop', values: { minDropPercent: 51, maxDropPercent: 50 }, code: 'invalid_retrigger' },
+    { name: 'minimum ramp up below zero', values: { minRampUpMs: -1 }, code: 'invalid_retrigger' },
+    { name: 'minimum ramp up above target ramp', values: { minRampUpMs: 31 }, code: 'invalid_retrigger' },
+    { name: 'minimum ramp down below zero', values: { minRampDownMs: -1 }, code: 'invalid_retrigger' },
+    { name: 'minimum ramp down above target ramp', values: { minRampDownMs: 21 }, code: 'invalid_retrigger' },
+    { name: 'texture threshold below scheduler interval', values: { textureThresholdMs: 99 }, code: 'invalid_retrigger' },
+    { name: 'quiet reset equal to texture threshold', values: { textureThresholdMs: 100, quietResetMs: 100 }, code: 'invalid_retrigger' },
+    { name: 'minimum envelope longer than duration', values: {}, durationMs: 149, code: 'invalid_retrigger_timing' }
+  ];
+
+  cases.forEach(function (item) {
+    var payload = validPlay();
+    var result;
+    payload.targets[0].durationMs = item.durationMs === undefined ? 150 : item.durationMs;
+    payload.targets[0].rampUpMs = 30;
+    payload.targets[0].rampDownMs = 20;
+    payload.targets[0].retrigger = retrigger(item.values);
+    result = parse(runtime, payload);
+    assertRejectedRetrigger(result, item.code);
+  });
+});
+
 test('rejects incomplete incompatible and impossible retrigger profiles atomically', function () {
   var runtime = loadRuntime();
   var payload = validPlay();
+  var result;
   payload.targets[0].durationMs = 500;
   payload.targets[0].rampUpMs = 180;
   payload.targets[0].rampDownMs = 80;
   payload.targets[0].retrigger = retrigger();
   delete payload.targets[0].retrigger.quietResetMs;
-  assert.equal(parse(runtime, payload).code, 'invalid_retrigger');
+  assertRejectedRetrigger(parse(runtime, payload), 'invalid_retrigger');
 
   payload.targets[0].retrigger = retrigger();
   payload.targets[0].effect = 'pulse';
-  assert.equal(parse(runtime, payload).code, 'invalid_retrigger_effect');
+  assertRejectedRetrigger(parse(runtime, payload), 'invalid_retrigger_effect');
 
   payload.targets[0].effect = 'hold';
   payload.targets[0].durationMs = 149;
   payload.targets[0].retrigger = retrigger({ minRampUpMs: 30, minRampDownMs: 20 });
-  assert.equal(parse(runtime, payload).code, 'invalid_retrigger_timing');
+  assertRejectedRetrigger(parse(runtime, payload), 'invalid_retrigger_timing');
 
   var baseline = readFixture('baseline.json');
   baseline.targets[0].retrigger = retrigger();
-  assert.equal(parse(runtime, baseline).code, 'invalid_retrigger');
+  assertRejectedRetrigger(parse(runtime, baseline), 'invalid_retrigger');
+
+  payload = validPlay();
+  payload.targets.push(copy(payload.targets[0]));
+  payload.targets[1].retrigger = retrigger();
+  delete payload.targets[1].retrigger.quietResetMs;
+  result = parse(runtime, payload);
+  assertRejectedRetrigger(result, 'invalid_retrigger');
+});
+
+test('normalizes retrigger to null for baseline stop selector and test targets', function () {
+  var runtime = loadRuntime();
+  var baseline = readFixture('baseline.json');
+  var stop = {
+    protocolVersion: 1,
+    command: 'stop',
+    source: 'fixture',
+    targets: [copy(validPlay().targets[0])]
+  };
+  var preview = {
+    protocolVersion: 1,
+    command: 'test',
+    source: 'fixture',
+    targets: [copy(validPlay().targets[0])]
+  };
+
+  [baseline, stop, preview].forEach(function (payload) {
+    var result = parse(runtime, payload);
+    assert.equal(result.ok, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(result.message.targets[0], 'retrigger'), true);
+    assert.equal(result.message.targets[0].retrigger, null);
+  });
+});
+
+test('rejects supplied retrigger profiles for stop selectors and test targets', function () {
+  var runtime = loadRuntime();
+  var stop = {
+    protocolVersion: 1,
+    command: 'stop',
+    source: 'fixture',
+    targets: [copy(validPlay().targets[0])]
+  };
+  var preview = {
+    protocolVersion: 1,
+    command: 'test',
+    source: 'fixture',
+    targets: [copy(validPlay().targets[0])]
+  };
+
+  stop.targets[0].retrigger = retrigger();
+  preview.targets[0].retrigger = retrigger();
+  assertRejectedRetrigger(parse(runtime, stop), 'invalid_retrigger');
+  assertRejectedRetrigger(parse(runtime, preview), 'invalid_retrigger');
 });
 
 test('preserves optional actuator presence separately from normalized defaults', function () {
