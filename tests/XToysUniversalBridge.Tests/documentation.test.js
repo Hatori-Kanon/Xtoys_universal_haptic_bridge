@@ -306,6 +306,45 @@ test('every webhook envelope is a valid protocol v1 command for the manual confi
   }), 'missing higher baseline sequence recovery after stop_all');
 });
 
+test('manual cleanup sends an empty higher-sequence baseline after stop_all recovery', function () {
+  var blocks = jsonBlocks(readManual());
+  var runtime = runtimeHarness.loadRuntime();
+  var config = blocks.filter(function (value) {
+    return value && value.groups && value.slots;
+  })[0];
+  var envelopes = blocks.filter(function (value) {
+    return value && value.action === 'xtoys_game_bridge';
+  });
+  var payloads = envelopes.map(function (envelope) {
+    return JSON.parse(envelope.payload);
+  });
+  var stopAllIndex = payloads.findIndex(function (payload) {
+    return payload.command === 'stop_all';
+  });
+  var recoveryIndex;
+  var recoveryPayload;
+
+  envelopes.forEach(function (envelope) {
+    assert.equal(runtime.XTHB.parseMessage(envelope.payload, config).ok, true);
+  });
+  assert.notEqual(stopAllIndex, -1, 'manual must include stop_all');
+  recoveryIndex = payloads.findIndex(function (payload, index) {
+    return index > stopAllIndex &&
+      payload.command === 'set_baseline' &&
+      payload.sequence === 4 &&
+      payload.targets.length > 0;
+  });
+  assert.notEqual(recoveryIndex, -1, 'missing non-empty sequence 4 recovery baseline after stop_all');
+  recoveryPayload = payloads[recoveryIndex];
+  assert.ok(payloads.some(function (payload, index) {
+    return index > recoveryIndex &&
+      payload.command === 'set_baseline' &&
+      payload.source === recoveryPayload.source &&
+      payload.sequence === 5 &&
+      payload.targets.length === 0;
+  }), 'missing empty sequence 5 cleanup baseline for the recovery source');
+});
+
 test('manual provides placeholder-only Private and Shared POST templates', function () {
   var manual = readManual();
   var webhookExamples = sectionBetween(manual, /^## 六类外层 Webhook 示例$/m, /^## 四阶段人工验收$/m, 'webhook examples');

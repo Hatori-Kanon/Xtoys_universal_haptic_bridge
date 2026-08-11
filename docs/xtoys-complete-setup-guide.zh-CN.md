@@ -379,7 +379,18 @@ Authorization: Bearer <AUTH_TOKEN>
 
 只有大于已接受 baseline sequence 的序号才能恢复。相同/旧序号保持物理零，更高 `sequence: 4` 恢复低值输出；这是 XTHB 状态机语义，不是 XToys Webhook 的通用功能。
 
-### 10. `test`：只做协议预览
+### 10. 空 `set_baseline`：在恢复后用更高 sequence 清除基线
+
+```json
+{
+  "action": "xtoys_game_bridge",
+  "payload": "{\"protocolVersion\":1,\"command\":\"set_baseline\",\"source\":\"manual-demo\",\"sequence\":5,\"targets\":[]}"
+}
+```
+
+在已用 `sequence: 4` 恢复活动 baseline 后，发送该完整外层 JSON；等待至少一个 scheduler tick，并按真实设备确认物理归零，再手动停止 Script。空 baseline 只清除同一 `source` 的基线，不会清除其他来源的活动状态。
+
+### 11. `test`：只做协议预览
 
 ```json
 {
