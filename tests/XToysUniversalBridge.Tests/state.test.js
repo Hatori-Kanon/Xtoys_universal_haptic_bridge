@@ -33,8 +33,23 @@ function target(part, durationMs) {
     pulseOffMs: 0,
     priority: 0,
     blend: 'replace',
-    baselineBlend: 'boost'
+    baselineBlend: 'boost',
+    retrigger: null
   };
+}
+
+function adaptiveTarget(part, durationMs) {
+  var value = target(part, durationMs);
+  value.retrigger = {
+    mode: 'adaptive',
+    minDropPercent: 25,
+    maxDropPercent: 100,
+    minRampUpMs: 0,
+    minRampDownMs: 0,
+    textureThresholdMs: 150,
+    quietResetMs: 600
+  };
+  return value;
 }
 
 function message(command, values) {
@@ -51,6 +66,10 @@ function message(command, values) {
 
 function eventKey(source, eventId) {
   return JSON.stringify([source, eventId]);
+}
+
+function partKey(source, part) {
+  return JSON.stringify([source, part]);
 }
 
 function plain(value) {
@@ -75,7 +94,8 @@ test('play records an active event target with acceptance and expiry times', fun
     acceptedAt: 1000,
     expiresAt: 1250,
     generation: 1,
-    target: target('vagina', 250)
+    target: target('vagina', 250),
+    cadence: null
   });
 });
 
@@ -123,6 +143,346 @@ test('duplicate and older event updates leave the accepted event unchanged', fun
   assert.equal(entry.sequence, 3);
   assert.equal(entry.target.part, 'vagina');
   assert.equal(entry.generation, 1);
+});
+
+test('accepted adaptive updates advance cadence while duplicate and older sequences do not', function () {
+  var engine = buildAndCreateEngine();
+  var cadence;
+
+  engine.applyMessage(message('play', {
+    eventId: 'attack', sequence: 3, targets: [adaptiveTarget('clitoris')]
+  }), 1000, false);
+  engine.applyMessage(message('update', {
+    eventId: 'attack', sequence: 3, targets: [adaptiveTarget('clitoris')]
+  }), 1100, false);
+  engine.applyMessage(message('update', {
+    eventId: 'attack', sequence: 2, targets: [adaptiveTarget('clitoris')]
+  }), 1200, false);
+  engine.applyMessage(message('update', {
+    eventId: 'attack', sequence: 4, targets: [adaptiveTarget('clitoris')]
+  }), 1300, false);
+  cadence = engine.snapshot().events[eventKey('bridge-a', 'attack')][0].cadence;
+
+  assert.equal(cadence.averageInterval, 300);
+  assert.equal(cadence.lastAttackAt, 1300);
+  assert.equal(cadence.lastGeneration, 2);
+  assert.deepEqual(plain(cadence), plain(
+    engine.hapticSnapshot().cadenceRecords[partKey('bridge-a', 'clitoris')]
+  ));
+});
+
+test('adaptive play removes older ordinary and adaptive same-source same-part entries only', function () {
+  var engine = buildAndCreateEngine();
+  var snapshot;
+
+  engine.applyMessage(message('play', {
+    eventId: 'old', sequence: 1,
+    targets: [adaptiveTarget('clitoris'), target('vagina')]
+  }), 1000, false);
+  engine.applyMessage(message('play', {
+    eventId: 'ordinary', sequence: 1,
+    targets: [target('clitoris'), target('anus')]
+  }), 1100, false);
+  engine.applyMessage(message('play', {
+    eventId: 'new', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }), 1300, false);
+  snapshot = engine.snapshot();
+
+  assert.deepEqual(plain(snapshot.events[eventKey('bridge-a', 'old')].map(function (entry) {
+    return entry.target.part;
+  })), ['vagina']);
+  assert.deepEqual(plain(snapshot.events[eventKey('bridge-a', 'ordinary')].map(function (entry) {
+    return entry.target.part;
+  })), ['anus']);
+  assert.equal(snapshot.events[eventKey('bridge-a', 'new')][0].cadence.averageInterval, 300);
+});
+
+test('adaptive ownership is source scoped and virtual groups remain exact identities', function () {
+  var engine = buildAndCreateEngine();
+  var snapshot;
+
+  engine.applyMessage(message('play', {
+    source: 'bridge-a', eventId: 'leaf-a', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }), 0, false);
+  engine.applyMessage(message('play', {
+    source: 'bridge-b', eventId: 'leaf-b', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }), 10, false);
+  engine.applyMessage(message('play', {
+    source: 'bridge-a', eventId: 'group', sequence: 1,
+    targets: [adaptiveTarget('genitals')]
+  }), 20, false);
+  engine.applyMessage(message('play', {
+    source: 'bridge-a', eventId: 'replacement', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }), 30, false);
+  snapshot = engine.snapshot();
+
+  assert.equal(snapshot.events[eventKey('bridge-b', 'leaf-b')].length, 1);
+  assert.equal(snapshot.events[eventKey('bridge-a', 'group')].length, 1);
+  assert.equal(snapshot.events[eventKey('bridge-a', 'replacement')].length, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.events, eventKey('bridge-a', 'leaf-a')), false);
+});
+
+test('cadence records are bounded cleaned after quiet and cleared by stop all', function () {
+  var engine = buildAndCreateEngine();
+  var index;
+
+  for (index = 0; index < 128; index += 1) {
+    engine.applyMessage(message('play', {
+      source: 'source-' + index,
+      eventId: 'event-' + index,
+      sequence: 1,
+      targets: [
+        adaptiveTarget('clitoris', 100),
+        adaptiveTarget('vagina', 100)
+      ]
+    }), 0, false);
+  }
+  assert.equal(Object.keys(engine.hapticSnapshot().cadenceRecords).length, 256);
+  engine.expire(100, false);
+  engine.applyMessage(message('play', {
+    source: 'fresh', eventId: 'fresh', sequence: 1,
+    targets: [adaptiveTarget('anus', 100)]
+  }), 1000, false);
+  assert.equal(Object.keys(engine.hapticSnapshot().cadenceRecords).length, 1);
+  engine.clearAll(false);
+  assert.deepEqual(plain(engine.hapticSnapshot()), {
+    cadenceRecords: {}, partOwners: {}
+  });
+});
+
+test('quiet cleanup drops cadence even while the owning event duration remains active', function () {
+  var engine = buildAndCreateEngine();
+  var snapshot;
+
+  engine.applyMessage(message('play', {
+    eventId: 'long', sequence: 1,
+    targets: [adaptiveTarget('clitoris', 1000)]
+  }), 0, false);
+  assert.equal(engine.expire(600, false).changed, false);
+  snapshot = engine.hapticSnapshot();
+
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.cadenceRecords, partKey('bridge-a', 'clitoris')), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.partOwners, partKey('bridge-a', 'clitoris')), true);
+});
+
+test('expired ordinary attacks cannot grow one part membership without bound', function () {
+  var engine = buildAndCreateEngine();
+  var owner;
+  var index;
+
+  for (index = 0; index < 300; index += 1) {
+    assert.equal(engine.applyMessage(message('play', {
+      eventId: 'event-' + index,
+      sequence: 1,
+      targets: [target('clitoris', 1)]
+    }), index * 2, false).rejected, null);
+  }
+  owner = engine.hapticSnapshot().partOwners[partKey('bridge-a', 'clitoris')];
+
+  assert.equal(Object.keys(owner.eventKeys).length, 1);
+  assert.equal(Object.keys(engine.snapshot().events).length, 1);
+});
+
+test('expired ordinary attacks cannot grow the owner map beyond target capacity', function () {
+  var engine = buildAndCreateEngine();
+  var index;
+
+  for (index = 0; index < 300; index += 1) {
+    assert.equal(engine.applyMessage(message('play', {
+      source: 'source-' + index,
+      eventId: 'event-' + index,
+      sequence: 1,
+      targets: [target('part-' + index, 1)]
+    }), index * 2, false).rejected, null);
+  }
+
+  assert.equal(Object.keys(engine.hapticSnapshot().partOwners).length, 1);
+  assert.equal(Object.keys(engine.snapshot().events).length, 1);
+});
+
+test('duplicate and older sequence early returns do not publish expired cleanup', function () {
+  var engine = buildAndCreateEngine();
+  var beforeLogical;
+  var beforeHaptic;
+
+  engine.applyMessage(message('play', {
+    eventId: 'attack', sequence: 3, targets: [target('clitoris', 1)]
+  }), 0, false);
+  beforeLogical = engine.snapshot();
+  beforeHaptic = engine.hapticSnapshot();
+
+  assert.equal(engine.applyMessage(message('play', {
+    eventId: 'attack', sequence: 3, targets: [target('vagina', 100)]
+  }), 2, false).changed, false);
+  assert.equal(engine.applyMessage(message('play', {
+    eventId: 'attack', sequence: 2, targets: [target('anus', 100)]
+  }), 2, false).changed, false);
+  assert.deepEqual(plain(engine.snapshot()), plain(beforeLogical));
+  assert.deepEqual(plain(engine.hapticSnapshot()), plain(beforeHaptic));
+});
+
+test('capacity rejection does not publish its expired cleanup candidate', function () {
+  var engine = buildAndCreateEngine();
+  var wideTargets = [];
+  var rejected;
+  var beforeLogical;
+  var beforeHaptic;
+  var index;
+
+  engine.applyMessage(message('play', {
+    eventId: 'expired', sequence: 1, targets: [target('clitoris', 1)]
+  }), 0, false);
+  for (index = 0; index < 127; index += 1) {
+    engine.applyMessage(message('play', {
+      eventId: 'active-' + index,
+      sequence: 1,
+      targets: [target('vagina', 1000), target('anus', 1000)]
+    }), 0, false);
+  }
+  wideTargets.push(target('vulva', 1000));
+  wideTargets.push(target('urethra', 1000));
+  wideTargets.push(target('butt', 1000));
+  beforeLogical = engine.snapshot();
+  beforeHaptic = engine.hapticSnapshot();
+  rejected = engine.applyMessage(message('play', {
+    eventId: 'rejected', sequence: 1, targets: wideTargets
+  }), 2, false);
+
+  assert.equal(rejected.rejected.code, 'state_capacity_exceeded');
+  assert.deepEqual(plain(engine.snapshot()), plain(beforeLogical));
+  assert.deepEqual(plain(engine.hapticSnapshot()), plain(beforeHaptic));
+});
+
+test('accepted cleanup and replacement retain the new sequence fence', function () {
+  var engine = buildAndCreateEngine();
+  var stale;
+  var entry;
+
+  engine.applyMessage(message('play', {
+    eventId: 'attack', sequence: 5, targets: [target('clitoris', 1)]
+  }), 0, false);
+  engine.applyMessage(message('play', {
+    eventId: 'attack', sequence: 6, targets: [target('vagina', 100)]
+  }), 2, false);
+  stale = engine.applyMessage(message('play', {
+    eventId: 'attack', sequence: 5, targets: [target('anus', 100)]
+  }), 3, false);
+  entry = engine.snapshot().events[eventKey('bridge-a', 'attack')][0];
+
+  assert.equal(stale.changed, false);
+  assert.equal(entry.sequence, 6);
+  assert.equal(entry.target.part, 'vagina');
+});
+
+test('cadence capacity evicts the oldest inactive record and rejects atomically when none are inactive', function () {
+  var engine = buildAndCreateEngine();
+  var beforeLogical;
+  var before;
+  var rejected;
+  var snapshot;
+  var index;
+
+  for (index = 0; index < 128; index += 1) {
+    engine.applyMessage(message('play', {
+      source: 'source-' + index,
+      eventId: 'event-' + index,
+      sequence: 1,
+      targets: [
+        adaptiveTarget('clitoris', 100),
+        adaptiveTarget('vagina', 100)
+      ]
+    }), 0, false);
+  }
+  beforeLogical = engine.snapshot();
+  before = engine.hapticSnapshot();
+  rejected = engine.applyMessage(message('play', {
+    source: 'full', eventId: 'full', sequence: 1,
+    targets: [adaptiveTarget('anus', 100)]
+  }), 1, false);
+  assert.equal(rejected.rejected.code, 'state_capacity_exceeded');
+  assert.deepEqual(plain(engine.snapshot()), plain(beforeLogical));
+  assert.deepEqual(plain(engine.hapticSnapshot()), plain(before));
+
+  engine.expire(100, false);
+  engine.applyMessage(message('play', {
+    source: 'fresh', eventId: 'fresh', sequence: 1,
+    targets: [adaptiveTarget('anus', 100)]
+  }), 101, false);
+  snapshot = engine.hapticSnapshot();
+  assert.equal(Object.keys(snapshot.cadenceRecords).length, 256);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.cadenceRecords, partKey('fresh', 'anus')), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.cadenceRecords, partKey('source-0', 'clitoris')), false);
+});
+
+test('stop and expiry clean generation-owned memberships while cadence survives until quiet', function () {
+  var engine = buildAndCreateEngine();
+  var snapshot;
+
+  engine.applyMessage(message('play', {
+    eventId: 'stopped', sequence: 1, targets: [adaptiveTarget('clitoris', 100)]
+  }), 0, false);
+  snapshot = engine.hapticSnapshot();
+  assert.equal(snapshot.partOwners[partKey('bridge-a', 'clitoris')]
+    .eventKeys[eventKey('bridge-a', 'stopped')], 1);
+  assert.equal(snapshot.partOwners[partKey('bridge-a', 'clitoris')]
+    .adaptiveGeneration, 1);
+  engine.applyMessage(message('stop', {
+    eventId: 'stopped', targets: [target('clitoris', 0)]
+  }), 10, false);
+  snapshot = engine.hapticSnapshot();
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.partOwners, partKey('bridge-a', 'clitoris')), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.cadenceRecords, partKey('bridge-a', 'clitoris')), true);
+
+  engine.applyMessage(message('play', {
+    eventId: 'expiring', sequence: 1, targets: [adaptiveTarget('clitoris', 100)]
+  }), 100, false);
+  assert.equal(engine.snapshot().events[eventKey('bridge-a', 'expiring')][0]
+    .cadence.averageInterval, 100);
+  engine.expire(200, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    engine.hapticSnapshot().partOwners, partKey('bridge-a', 'clitoris')), false);
+});
+
+test('haptic snapshots are defensive copies', function () {
+  var engine = buildAndCreateEngine();
+  var snapshot;
+
+  engine.applyMessage(message('play', {
+    eventId: 'attack', sequence: 1, targets: [adaptiveTarget('clitoris')]
+  }), 0, false);
+  snapshot = engine.hapticSnapshot();
+  snapshot.cadenceRecords[partKey('bridge-a', 'clitoris')].mode = 'mutated';
+  snapshot.partOwners[partKey('bridge-a', 'clitoris')].adaptiveEventKey = 'mutated';
+
+  assert.equal(engine.hapticSnapshot()
+    .cadenceRecords[partKey('bridge-a', 'clitoris')].mode, 'single');
+  assert.equal(engine.hapticSnapshot()
+    .partOwners[partKey('bridge-a', 'clitoris')].adaptiveEventKey,
+  eventKey('bridge-a', 'attack'));
+});
+
+test('accepted adaptive targets own their nested retrigger profile', function () {
+  var engine = buildAndCreateEngine();
+  var attack = message('play', {
+    eventId: 'attack', sequence: 1, targets: [adaptiveTarget('clitoris')]
+  });
+
+  engine.applyMessage(attack, 0, false);
+  attack.targets[0].retrigger.quietResetMs = 1;
+
+  assert.equal(engine.snapshot().events[eventKey('bridge-a', 'attack')][0]
+    .target.retrigger.quietResetMs, 600);
 });
 
 test('stop by event id removes only the matching source-scoped event', function () {
