@@ -10,6 +10,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
   ns.MAX_STATE_LABEL_LENGTH = 128;
   ns.MAX_ACTIVE_EVENTS = 128;
   ns.MAX_ACTIVE_EVENT_TARGETS = 256;
+  ns.SCHEDULER_INTERVAL_MS = 100;
+  ns.MAX_CADENCE_RECORDS = ns.MAX_ACTIVE_EVENT_TARGETS;
   ns.MAX_BASELINE_SOURCES = 64;
   ns.MAX_BASELINE_TARGETS = 256;
   ns.MAX_TIME_MS = 600000;
@@ -247,6 +249,65 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return numberValue(value, code);
   }
 
+  function normalizedRetrigger(raw, target) {
+    var required = [
+      'mode', 'minDropPercent', 'maxDropPercent', 'minRampUpMs',
+      'minRampDownMs', 'textureThresholdMs', 'quietResetMs'
+    ];
+    var index;
+    var value;
+    var result = {};
+    if (raw === undefined) {
+      return { ok: true, value: null };
+    }
+    if (!isObject(raw)) {
+      return fail('invalid_retrigger', 'Retrigger must be an object.');
+    }
+    for (index = 0; index < required.length; index += 1) {
+      if (!hasOwn.call(raw, required[index])) {
+        return fail('invalid_retrigger', 'Every retrigger field is required.');
+      }
+    }
+    if (raw.mode !== 'adaptive') {
+      return fail('invalid_retrigger', 'Unsupported retrigger mode.');
+    }
+    if (target.effect !== 'hold') {
+      return fail('invalid_retrigger_effect', 'Adaptive retrigger requires hold effect.');
+    }
+    value = numberValue(raw.minDropPercent, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minDropPercent = value.value;
+    value = numberValue(raw.maxDropPercent, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.maxDropPercent = value.value;
+    value = numberValue(raw.minRampUpMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minRampUpMs = value.value;
+    value = numberValue(raw.minRampDownMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minRampDownMs = value.value;
+    value = numberValue(raw.textureThresholdMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.textureThresholdMs = value.value;
+    value = numberValue(raw.quietResetMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.quietResetMs = value.value;
+    if (result.minDropPercent < 0 || result.maxDropPercent > 100 ||
+        result.minDropPercent > result.maxDropPercent ||
+        result.minRampUpMs < 0 || result.minRampUpMs > target.rampUpMs ||
+        result.minRampDownMs < 0 || result.minRampDownMs > target.rampDownMs ||
+        result.textureThresholdMs < ns.SCHEDULER_INTERVAL_MS ||
+        result.quietResetMs <= result.textureThresholdMs) {
+      return fail('invalid_retrigger', 'Retrigger ranges are inconsistent.');
+    }
+    if (result.minRampDownMs + ns.SCHEDULER_INTERVAL_MS +
+        result.minRampUpMs > target.durationMs) {
+      return fail('invalid_retrigger_timing', 'Minimum retrigger envelope exceeds duration.');
+    }
+    result.mode = 'adaptive';
+    return { ok: true, value: result };
+  }
+
   function normalizedTarget(raw, config, transient) {
     var parsed;
     var rotateSpeed;
@@ -285,7 +346,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       pulseOffMs: 0,
       priority: 0,
       blend: raw.blend === undefined ? 'replace' : raw.blend,
-      baselineBlend: raw.baselineBlend === undefined ? 'boost' : raw.baselineBlend
+      baselineBlend: raw.baselineBlend === undefined ? 'boost' : raw.baselineBlend,
+      retrigger: null
     };
     parsed = optionalNumber(raw.frequency, 0, 'invalid_number');
     if (!parsed.ok) {
@@ -345,6 +407,15 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       return parsed;
     }
     target.priority = parsed.value;
+    if (transient) {
+      parsed = normalizedRetrigger(raw.retrigger, target);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      target.retrigger = parsed.value;
+    } else if (raw.retrigger !== undefined) {
+      return fail('invalid_retrigger', 'Retrigger is only supported for transient targets.');
+    }
     return { ok: true, value: target };
   }
 

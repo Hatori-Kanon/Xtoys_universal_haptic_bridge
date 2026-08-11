@@ -24,6 +24,19 @@ function validPlay() {
   return readFixture('play.json');
 }
 
+function retrigger(values) {
+  var data = values || {};
+  return {
+    mode: data.mode === undefined ? 'adaptive' : data.mode,
+    minDropPercent: data.minDropPercent === undefined ? 25 : data.minDropPercent,
+    maxDropPercent: data.maxDropPercent === undefined ? 100 : data.maxDropPercent,
+    minRampUpMs: data.minRampUpMs === undefined ? 30 : data.minRampUpMs,
+    minRampDownMs: data.minRampDownMs === undefined ? 20 : data.minRampDownMs,
+    textureThresholdMs: data.textureThresholdMs === undefined ? 150 : data.textureThresholdMs,
+    quietResetMs: data.quietResetMs === undefined ? 600 : data.quietResetMs
+  };
+}
+
 function parse(runtime, payload, config) {
   return runtime.XTHB.parseMessage(JSON.stringify(payload), config || validConfig());
 }
@@ -50,8 +63,46 @@ test('parses a valid play message into the complete normalized target shape', fu
     pulseOffMs: 0,
     priority: 0,
     blend: 'replace',
-    baselineBlend: 'boost'
+    baselineBlend: 'boost',
+    retrigger: null
   });
+});
+
+test('normalizes a complete adaptive retrigger profile without changing protocol version', function () {
+  var runtime = loadRuntime();
+  var payload = validPlay();
+  payload.targets[0].durationMs = 500;
+  payload.targets[0].rampUpMs = 180;
+  payload.targets[0].rampDownMs = 80;
+  payload.targets[0].retrigger = retrigger();
+  var result = parse(runtime, payload);
+  assert.equal(result.ok, true);
+  assert.equal(result.message.protocolVersion, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.message.targets[0].retrigger)), retrigger());
+});
+
+test('rejects incomplete incompatible and impossible retrigger profiles atomically', function () {
+  var runtime = loadRuntime();
+  var payload = validPlay();
+  payload.targets[0].durationMs = 500;
+  payload.targets[0].rampUpMs = 180;
+  payload.targets[0].rampDownMs = 80;
+  payload.targets[0].retrigger = retrigger();
+  delete payload.targets[0].retrigger.quietResetMs;
+  assert.equal(parse(runtime, payload).code, 'invalid_retrigger');
+
+  payload.targets[0].retrigger = retrigger();
+  payload.targets[0].effect = 'pulse';
+  assert.equal(parse(runtime, payload).code, 'invalid_retrigger_effect');
+
+  payload.targets[0].effect = 'hold';
+  payload.targets[0].durationMs = 149;
+  payload.targets[0].retrigger = retrigger({ minRampUpMs: 30, minRampDownMs: 20 });
+  assert.equal(parse(runtime, payload).code, 'invalid_retrigger_timing');
+
+  var baseline = readFixture('baseline.json');
+  baseline.targets[0].retrigger = retrigger();
+  assert.equal(parse(runtime, baseline).code, 'invalid_retrigger');
 });
 
 test('preserves optional actuator presence separately from normalized defaults', function () {
