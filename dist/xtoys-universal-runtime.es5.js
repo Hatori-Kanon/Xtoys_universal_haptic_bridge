@@ -6,6 +6,12 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
   ns.MAX_PAYLOAD_LENGTH = 32768;
   ns.MAX_TARGETS = 32;
   ns.MAX_STATES = 32;
+  ns.MAX_IDENTIFIER_LENGTH = 128;
+  ns.MAX_STATE_LABEL_LENGTH = 128;
+  ns.MAX_ACTIVE_EVENTS = 128;
+  ns.MAX_ACTIVE_EVENT_TARGETS = 256;
+  ns.MAX_BASELINE_SOURCES = 64;
+  ns.MAX_BASELINE_TARGETS = 256;
   ns.MAX_TIME_MS = 600000;
   ns.clamp = function (value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -401,6 +407,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     if (typeof payload.source !== 'string' || isBlankString(payload.source)) {
       return fail('missing_source', 'Source is required.');
     }
+    if (payload.command !== 'stop_all' && payload.source.length > ns.MAX_IDENTIFIER_LENGTH) {
+      return fail('identifier_too_long', 'Source exceeds the maximum length.');
+    }
     if (payload.states !== undefined) {
       if (!Array.isArray(payload.states)) {
         return fail('invalid_states', 'States must be an array.');
@@ -412,6 +421,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       for (index = 0; index < payload.states.length; index += 1) {
         if (typeof payload.states[index] !== 'string') {
           return fail('invalid_states', 'State labels must be strings.');
+        }
+        if (payload.command !== 'stop_all' && payload.states[index].length > ns.MAX_STATE_LABEL_LENGTH) {
+          return fail('state_label_too_long', 'State label exceeds the maximum length.');
         }
         states.push(payload.states[index]);
       }
@@ -437,6 +449,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     if (payload.command === 'play' || payload.command === 'update') {
       if (typeof payload.eventId !== 'string' || isBlankString(payload.eventId)) {
         return fail('missing_event_id', 'A non-empty event ID is required.');
+      }
+      if (payload.eventId.length > ns.MAX_IDENTIFIER_LENGTH) {
+        return fail('identifier_too_long', 'Event ID exceeds the maximum length.');
       }
       sequence = normalizedSequence(payload.sequence);
       if (!sequence.ok) {
@@ -468,6 +483,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       if (payload.eventId !== undefined && payload.eventId !== null) {
         if (typeof payload.eventId !== 'string' || isBlankString(payload.eventId)) {
           return fail('missing_event_id', 'Event ID must be non-empty when supplied.');
+        }
+        if (payload.eventId.length > ns.MAX_IDENTIFIER_LENGTH) {
+          return fail('identifier_too_long', 'Event ID exceeds the maximum length.');
         }
         message.eventId = payload.eventId;
       }
@@ -526,6 +544,28 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return ns.copyObject(value);
   }
 
+  function copyOwnMap(value) {
+    var key;
+    var copied = {};
+    for (key in value) {
+      if (hasOwn.call(value, key)) {
+        copied[key] = value[key];
+      }
+    }
+    return copied;
+  }
+
+  function copyTarget(target) {
+    var key;
+    var copied = {};
+    for (key in target) {
+      if (hasOwn.call(target, key)) {
+        copied[key] = target[key];
+      }
+    }
+    return copied;
+  }
+
   function addPart(parts, part) {
     if (parts.indexOf(part) === -1) {
       parts.push(part);
@@ -556,6 +596,31 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     };
   }
 
+  function createEventEntries(message, nowMs, nextGeneration) {
+    var index;
+    var entries = [];
+    for (index = 0; index < message.targets.length; index += 1) {
+      entries.push({
+        source: message.source,
+        eventId: message.eventId,
+        sequence: message.sequence,
+        acceptedAt: nowMs,
+        expiresAt: nowMs + message.targets[index].durationMs,
+        generation: nextGeneration,
+        target: copyTarget(message.targets[index])
+      });
+    }
+    return entries;
+  }
+
+  function createBaselineEntry(message, target) {
+    return {
+      source: message.source,
+      sequence: message.sequence,
+      target: copyTarget(target)
+    };
+  }
+
   ns.createStateEngine = function () {
     var baseline = {};
     var events = {};
@@ -572,13 +637,33 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       engine.events = events;
     }
 
-    function result(changed, parts, nextBaseline, nextEvents, nextGeneration, ignoredReason) {
-      return {
+    function result(changed, parts, nextBaseline, nextEvents, nextGeneration, ignoredReason, includeSnapshot) {
+      var value = {
         changed: changed,
         changedParts: parts,
-        snapshot: snapshot(nextBaseline, nextEvents, nextGeneration),
-        ignoredReason: ignoredReason || null
+        ignoredReason: ignoredReason || null,
+        rejected: null
       };
+      if (includeSnapshot) {
+        value.snapshot = snapshot(nextBaseline, nextEvents, nextGeneration);
+      }
+      return value;
+    }
+
+    function capacityResult(detail, includeSnapshot) {
+      var value = {
+        changed: false,
+        changedParts: [],
+        ignoredReason: null,
+        rejected: {
+          code: 'state_capacity_exceeded',
+          detail: detail
+        }
+      };
+      if (includeSnapshot) {
+        value.snapshot = snapshot(baseline, events, generation);
+      }
+      return value;
     }
 
     function hasActiveEntry(entries, nowMs) {
@@ -591,106 +676,144 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       return false;
     }
 
-    function completeEvent(message, nowMs, nextGeneration) {
+    function activeEventCounts(candidateEvents, nowMs) {
+      var key;
+      var entries;
       var index;
-      var entries = [];
-      for (index = 0; index < message.targets.length; index += 1) {
-        entries.push({
-          source: message.source,
-          eventId: message.eventId,
-          sequence: message.sequence,
-          acceptedAt: nowMs,
-          expiresAt: nowMs + message.targets[index].durationMs,
-          generation: nextGeneration,
-          target: copy(message.targets[index])
-        });
+      var activeTargets;
+      var eventCount = 0;
+      var targetCount = 0;
+      for (key in candidateEvents) {
+        if (hasOwn.call(candidateEvents, key)) {
+          entries = candidateEvents[key];
+          activeTargets = 0;
+          for (index = 0; index < entries.length; index += 1) {
+            if (entries[index].expiresAt > nowMs) {
+              activeTargets += 1;
+            }
+          }
+          if (activeTargets > 0) {
+            eventCount += 1;
+            targetCount += activeTargets;
+          }
+        }
       }
-      return entries;
+      return { events: eventCount, targets: targetCount };
+    }
+
+    function ownKeyCount(value) {
+      var key;
+      var count = 0;
+      for (key in value) {
+        if (hasOwn.call(value, key)) {
+          count += 1;
+        }
+      }
+      return count;
     }
 
     function applyEvent(message, nowMs, dryRun) {
       var key = eventKey(message.source, message.eventId);
       var current = events[key];
       var nextEvents;
+      var nextEntries;
+      var counts;
       var parts = [];
       var nextGeneration;
 
       if (message.command === 'update' &&
           (!hasOwn.call(events, key) || !hasActiveEntry(current, nowMs))) {
-        return result(false, [], baseline, events, generation, 'absent_event');
+        return result(false, [], baseline, events, generation, 'absent_event', dryRun);
       }
       if (hasOwn.call(events, key) && message.sequence <= current[0].sequence) {
-        return result(false, [], baseline, events, generation);
+        return result(false, [], baseline, events, generation, null, dryRun);
       }
-      nextEvents = copy(events);
       nextGeneration = generation + 1;
-      if (hasOwn.call(nextEvents, key)) {
-        addEntryParts(parts, nextEvents[key]);
+      nextEntries = createEventEntries(message, nowMs, nextGeneration);
+      nextEvents = copyOwnMap(events);
+      if (hasOwn.call(events, key)) {
+        addEntryParts(parts, events[key]);
       }
-      addEntryParts(parts, completeEvent(message, nowMs, nextGeneration));
-      nextEvents[key] = completeEvent(message, nowMs, nextGeneration);
+      addEntryParts(parts, nextEntries);
+      nextEvents[key] = nextEntries;
+      counts = activeEventCounts(nextEvents, nowMs);
+      if (counts.events > ns.MAX_ACTIVE_EVENTS) {
+        return capacityResult('Active event identity limit exceeded.', dryRun);
+      }
+      if (counts.targets > ns.MAX_ACTIVE_EVENT_TARGETS) {
+        return capacityResult('Active event target limit exceeded.', dryRun);
+      }
       if (!dryRun) {
         publish(baseline, nextEvents, baselineSequences, nextGeneration);
       }
-      return result(true, parts, baseline, nextEvents, nextGeneration);
+      return result(true, parts, baseline, nextEvents, nextGeneration, null, dryRun);
     }
 
     function applyStop(message, dryRun) {
       var key;
-      var nextEvents = copy(events);
+      var nextEvents = events;
       var parts = [];
       var requestedParts = targetParts(message.targets);
       var eventEntries;
       var keptEntries;
+      var entryChanged;
       var index;
-      var eventSource;
       var changed = false;
       var nextGeneration;
 
+      function retainRequested(entries) {
+        var retained = [];
+        var retainedIndex;
+        entryChanged = false;
+        for (retainedIndex = 0; retainedIndex < entries.length; retainedIndex += 1) {
+          if (requestedParts.indexOf(entries[retainedIndex].target.part) !== -1) {
+            addPart(parts, entries[retainedIndex].target.part);
+            entryChanged = true;
+          } else {
+            retained.push(entries[retainedIndex]);
+          }
+        }
+        return retained;
+      }
+
       if (message.eventId !== null) {
         key = eventKey(message.source, message.eventId);
-        if (hasOwn.call(nextEvents, key)) {
-          eventEntries = nextEvents[key];
+        if (hasOwn.call(events, key)) {
+          eventEntries = events[key];
           if (requestedParts.length === 0) {
+            nextEvents = copyOwnMap(events);
             addEntryParts(parts, eventEntries);
             delete nextEvents[key];
             changed = true;
           } else {
-            keptEntries = [];
-            for (index = 0; index < eventEntries.length; index += 1) {
-              if (requestedParts.indexOf(eventEntries[index].target.part) !== -1) {
-                addPart(parts, eventEntries[index].target.part);
-                changed = true;
-              } else {
-                keptEntries.push(eventEntries[index]);
-              }
-            }
-            if (keptEntries.length === 0) {
-              delete nextEvents[key];
-            } else {
-              nextEvents[key] = keptEntries;
-            }
-          }
-        }
-      } else {
-        for (key in nextEvents) {
-          if (hasOwn.call(nextEvents, key)) {
-            eventEntries = nextEvents[key];
-            eventSource = eventEntries[0].source;
-            if (eventSource === message.source) {
-              keptEntries = [];
-              for (index = 0; index < eventEntries.length; index += 1) {
-                if (requestedParts.indexOf(eventEntries[index].target.part) !== -1) {
-                  addPart(parts, eventEntries[index].target.part);
-                  changed = true;
-                } else {
-                  keptEntries.push(eventEntries[index]);
-                }
-              }
+            keptEntries = retainRequested(eventEntries);
+            if (entryChanged) {
+              nextEvents = copyOwnMap(events);
               if (keptEntries.length === 0) {
                 delete nextEvents[key];
               } else {
                 nextEvents[key] = keptEntries;
+              }
+              changed = true;
+            }
+          }
+        }
+      } else {
+        for (key in events) {
+          if (hasOwn.call(events, key)) {
+            eventEntries = events[key];
+            if (eventEntries[0].source === message.source) {
+              keptEntries = retainRequested(eventEntries);
+              if (entryChanged) {
+                if (!changed) {
+                  nextEvents = copyOwnMap(events);
+                }
+                if (keptEntries.length === 0) {
+                  delete nextEvents[key];
+                } else {
+                  nextEvents[key] = keptEntries;
+                }
+                changed = true;
               }
             }
           }
@@ -700,7 +823,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       if (changed && !dryRun) {
         publish(baseline, nextEvents, baselineSequences, nextGeneration);
       }
-      return result(changed, parts, baseline, nextEvents, nextGeneration);
+      return result(changed, parts, baseline, nextEvents, nextGeneration, null, dryRun);
     }
 
     function applyBaseline(message, dryRun) {
@@ -715,62 +838,58 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var nextGeneration;
 
       if (hasOwn.call(baselineSequences, sequenceKey) && message.sequence <= currentSequence) {
-        return result(false, [], baseline, events, generation);
+        return result(false, [], baseline, events, generation, null, dryRun);
       }
-      nextBaseline = copy(baseline);
-      nextSequences = copy(baselineSequences);
-      for (key in nextBaseline) {
-        if (hasOwn.call(nextBaseline, key) && nextBaseline[key].source === message.source) {
-          addPart(parts, nextBaseline[key].target.part);
+      nextBaseline = copyOwnMap(baseline);
+      nextSequences = copyOwnMap(baselineSequences);
+      for (key in baseline) {
+        if (hasOwn.call(baseline, key) && baseline[key].source === message.source) {
+          addPart(parts, baseline[key].target.part);
           delete nextBaseline[key];
           changed = true;
         }
       }
       for (index = 0; index < message.targets.length; index += 1) {
         key = baselineKey(message.source, message.targets[index].part);
-        nextBaseline[key] = {
-          source: message.source,
-          sequence: message.sequence,
-          target: copy(message.targets[index])
-        };
+        nextBaseline[key] = createBaselineEntry(message, message.targets[index]);
         addPart(parts, message.targets[index].part);
         changed = true;
       }
       nextSequences[sequenceKey] = message.sequence;
+      if (ownKeyCount(nextSequences) > ns.MAX_BASELINE_SOURCES) {
+        return capacityResult('Baseline source limit exceeded.', dryRun);
+      }
+      if (ownKeyCount(nextBaseline) > ns.MAX_BASELINE_TARGETS) {
+        return capacityResult('Baseline target limit exceeded.', dryRun);
+      }
       nextGeneration = changed ? generation + 1 : generation;
       if (!dryRun) {
         publish(nextBaseline, events, nextSequences, nextGeneration);
       }
-      return result(changed, parts, nextBaseline, events, nextGeneration);
+      return result(changed, parts, nextBaseline, events, nextGeneration, null, dryRun);
     }
 
     function applyTest(message, nowMs) {
-      var nextEvents = copy(events);
+      var nextEvents = events;
       var nextGeneration = generation;
-      var entries = [];
-      var index;
+      var entries;
       if (message.targets.length > 0) {
         nextGeneration += 1;
-        for (index = 0; index < message.targets.length; index += 1) {
-          entries.push({
-            source: message.source,
-            eventId: null,
-            sequence: message.sequence,
-            acceptedAt: nowMs,
-            expiresAt: nowMs + message.targets[index].durationMs,
-            generation: nextGeneration,
-            target: copy(message.targets[index])
-          });
-        }
+        entries = createEventEntries(message, nowMs, nextGeneration);
+        nextEvents = copyOwnMap(events);
         nextEvents[ns.compositeKey(['preview', message.source, nextGeneration])] = entries;
       }
-      return result(false, targetParts(message.targets), baseline, nextEvents, nextGeneration);
+      return result(false, targetParts(message.targets), baseline, nextEvents, nextGeneration, null, true);
     }
 
     engine.baseline = baseline;
     engine.events = events;
     engine.snapshot = function () {
       return snapshot(baseline, events, generation);
+    };
+    engine.readState = function () {
+      /* Internal read-only view. Callers must never mutate retained maps or entries. */
+      return { baseline: baseline, events: events, generation: generation };
     };
     engine.clearAll = function (dryRun) {
       var nextGeneration = generation + 1;
@@ -789,7 +908,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       if (!dryRun) {
         publish({}, {}, baselineSequences, nextGeneration);
       }
-      return result(true, parts, {}, {}, nextGeneration);
+      return result(true, parts, {}, {}, nextGeneration, null, dryRun === true);
     };
     engine.applyMessage = function (message, nowMs, dryRun) {
       if (message.command === 'play' || message.command === 'update') {
@@ -807,41 +926,70 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       if (message.command === 'test') {
         return applyTest(message, nowMs);
       }
-      return result(false, [], baseline, events, generation);
+      return result(false, [], baseline, events, generation, null, dryRun === true);
     };
     engine.expire = function (nowMs, dryRun) {
-      var nextEvents = copy(events);
+      var nextEvents;
       var key;
       var index;
       var entries;
       var keptEntries;
+      var entryChanged;
       var parts = [];
       var changed = false;
       var nextGeneration;
-      for (key in nextEvents) {
-        if (hasOwn.call(nextEvents, key)) {
-          entries = nextEvents[key];
-          keptEntries = [];
+
+      for (key in events) {
+        if (hasOwn.call(events, key)) {
+          entries = events[key];
           for (index = 0; index < entries.length; index += 1) {
             if (entries[index].expiresAt <= nowMs) {
-              addPart(parts, entries[index].target.part);
               changed = true;
-            } else {
-              keptEntries.push(entries[index]);
+              break;
             }
           }
-          if (keptEntries.length === 0) {
-            delete nextEvents[key];
-          } else {
-            nextEvents[key] = keptEntries;
+          if (changed) {
+            break;
           }
         }
       }
-      nextGeneration = changed ? generation + 1 : generation;
-      if (changed && dryRun !== true) {
+      if (!changed) {
+        return result(false, [], baseline, events, generation, null, dryRun === true);
+      }
+
+      nextEvents = copyOwnMap(events);
+      for (key in events) {
+        if (hasOwn.call(events, key)) {
+          entries = events[key];
+          entryChanged = false;
+          for (index = 0; index < entries.length; index += 1) {
+            if (entries[index].expiresAt <= nowMs) {
+              entryChanged = true;
+              break;
+            }
+          }
+          if (entryChanged) {
+            keptEntries = [];
+            for (index = 0; index < entries.length; index += 1) {
+              if (entries[index].expiresAt <= nowMs) {
+                addPart(parts, entries[index].target.part);
+              } else {
+                keptEntries.push(entries[index]);
+              }
+            }
+            if (keptEntries.length === 0) {
+              delete nextEvents[key];
+            } else {
+              nextEvents[key] = keptEntries;
+            }
+          }
+        }
+      }
+      nextGeneration = generation + 1;
+      if (dryRun !== true) {
         publish(baseline, nextEvents, baselineSequences, nextGeneration);
       }
-      return result(changed, parts, baseline, nextEvents, nextGeneration);
+      return result(true, parts, baseline, nextEvents, nextGeneration, null, dryRun === true);
     };
     return engine;
   };
@@ -1121,16 +1269,15 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     };
   }
 
-  function sameCore(left, right) {
+  function sameActuator(left, right) {
     return left !== undefined &&
       left.value === right.value &&
       left.frequency === right.frequency &&
-      left.direction === right.direction &&
-      left.generation === right.generation;
+      left.direction === right.direction;
   }
 
   function sameTuple(left, right) {
-    return sameCore(left, right) && left.rampSeconds === right.rampSeconds;
+    return sameActuator(left, right) && left.rampSeconds === right.rampSeconds;
   }
 
   function containsPart(parts, part) {
@@ -1160,7 +1307,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var milliseconds = 0;
     var currentCore = coreTuple(current);
 
-    if (sameCore(previousTuple, currentCore)) {
+    if (sameActuator(previousTuple, currentCore)) {
       return previousTuple.rampSeconds;
     }
     if (expiryReleased(previous, current, expiredParts)) {
@@ -1201,6 +1348,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var failure;
       tuple.rampSeconds = transition.rampSeconds;
       if (!force && pendingDispatches[slot.id] === undefined && sameTuple(lastTuples[slot.id], tuple)) {
+        lastSlots[slot.id] = copy(slot);
         return { changed: false, failure: null };
       }
       if (generationFloors[slot.id] === undefined) {
@@ -1209,6 +1357,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         physicalSlot.generation = Math.max(physicalSlot.generation, generationFloors[slot.id] + 1);
         generationFloors[slot.id] = physicalSlot.generation;
       }
+      tuple.generation = physicalSlot.generation;
       try {
         outputAdapter.applySlot(physicalSlot, copy(transition));
       } catch (error) {
@@ -1231,7 +1380,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
     function transitionFor(slot, expiredParts) {
       var pending = pendingDispatches[slot.id];
-      if (pending !== undefined && sameCore(pending.tuple, coreTuple(slot))) {
+      if (pending !== undefined && sameActuator(pending.tuple, coreTuple(slot))) {
         return copy(pending.transition);
       }
       return {
@@ -1262,7 +1411,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     }
 
     function dispatch(atMs, expiredParts) {
-      var slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
+      var slots = ns.computeSlots(engine.readState(), normalizedConfig, atMs);
       var index;
       var slot;
       var transition;
@@ -1322,6 +1471,13 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         };
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
+      if (applied.rejected !== null) {
+        return {
+          ok: false,
+          code: applied.rejected.code,
+          detail: applied.rejected.detail
+        };
+      }
       expired = engine.expire(atMs, false);
       if (applied.ignoredReason === 'absent_event' && !expired.changed) {
         return {

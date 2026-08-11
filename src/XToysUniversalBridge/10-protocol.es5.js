@@ -351,6 +351,9 @@
     if (typeof payload.source !== 'string' || isBlankString(payload.source)) {
       return fail('missing_source', 'Source is required.');
     }
+    if (payload.command !== 'stop_all' && payload.source.length > ns.MAX_IDENTIFIER_LENGTH) {
+      return fail('identifier_too_long', 'Source exceeds the maximum length.');
+    }
     if (payload.states !== undefined) {
       if (!Array.isArray(payload.states)) {
         return fail('invalid_states', 'States must be an array.');
@@ -362,6 +365,9 @@
       for (index = 0; index < payload.states.length; index += 1) {
         if (typeof payload.states[index] !== 'string') {
           return fail('invalid_states', 'State labels must be strings.');
+        }
+        if (payload.command !== 'stop_all' && payload.states[index].length > ns.MAX_STATE_LABEL_LENGTH) {
+          return fail('state_label_too_long', 'State label exceeds the maximum length.');
         }
         states.push(payload.states[index]);
       }
@@ -387,6 +393,9 @@
     if (payload.command === 'play' || payload.command === 'update') {
       if (typeof payload.eventId !== 'string' || isBlankString(payload.eventId)) {
         return fail('missing_event_id', 'A non-empty event ID is required.');
+      }
+      if (payload.eventId.length > ns.MAX_IDENTIFIER_LENGTH) {
+        return fail('identifier_too_long', 'Event ID exceeds the maximum length.');
       }
       sequence = normalizedSequence(payload.sequence);
       if (!sequence.ok) {
@@ -418,6 +427,9 @@
       if (payload.eventId !== undefined && payload.eventId !== null) {
         if (typeof payload.eventId !== 'string' || isBlankString(payload.eventId)) {
           return fail('missing_event_id', 'Event ID must be non-empty when supplied.');
+        }
+        if (payload.eventId.length > ns.MAX_IDENTIFIER_LENGTH) {
+          return fail('identifier_too_long', 'Event ID exceeds the maximum length.');
         }
         message.eventId = payload.eventId;
       }

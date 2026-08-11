@@ -160,6 +160,38 @@ test('rejects invalid protocol envelopes and target limits', function () {
   assert.equal(parse(runtime, tooManyStates).code, 'too_many_states');
 });
 
+test('bounds stored identifiers and labels without weakening emergency stop all', function () {
+  var runtime = loadRuntime();
+  var source128 = new Array(129).join('s');
+  var source129 = source128 + 's';
+  var event128 = new Array(129).join('e');
+  var event129 = event128 + 'e';
+  var label129 = new Array(130).join('l');
+  var play = validPlay();
+  var result;
+
+  play.source = source128;
+  play.eventId = event128;
+  assert.equal(parse(runtime, play).ok, true);
+
+  play.source = source129;
+  assert.equal(parse(runtime, play).code, 'identifier_too_long');
+  play.source = source128;
+  play.eventId = event129;
+  assert.equal(parse(runtime, play).code, 'identifier_too_long');
+  play.eventId = event128;
+  play.states = [label129];
+  assert.equal(parse(runtime, play).code, 'state_label_too_long');
+
+  result = runtime.XTHB.parseMessage(JSON.stringify({
+    protocolVersion: 1,
+    command: 'stop_all',
+    source: source129,
+    states: [label129]
+  }), null);
+  assert.equal(result.ok, true);
+});
+
 test('rejects invalid target fields and requires explicit rotation direction', function () {
   var runtime = loadRuntime();
   var unknownPart = validPlay();

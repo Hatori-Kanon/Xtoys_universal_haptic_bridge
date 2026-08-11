@@ -16,16 +16,15 @@
     };
   }
 
-  function sameCore(left, right) {
+  function sameActuator(left, right) {
     return left !== undefined &&
       left.value === right.value &&
       left.frequency === right.frequency &&
-      left.direction === right.direction &&
-      left.generation === right.generation;
+      left.direction === right.direction;
   }
 
   function sameTuple(left, right) {
-    return sameCore(left, right) && left.rampSeconds === right.rampSeconds;
+    return sameActuator(left, right) && left.rampSeconds === right.rampSeconds;
   }
 
   function containsPart(parts, part) {
@@ -55,7 +54,7 @@
     var milliseconds = 0;
     var currentCore = coreTuple(current);
 
-    if (sameCore(previousTuple, currentCore)) {
+    if (sameActuator(previousTuple, currentCore)) {
       return previousTuple.rampSeconds;
     }
     if (expiryReleased(previous, current, expiredParts)) {
@@ -96,6 +95,7 @@
       var failure;
       tuple.rampSeconds = transition.rampSeconds;
       if (!force && pendingDispatches[slot.id] === undefined && sameTuple(lastTuples[slot.id], tuple)) {
+        lastSlots[slot.id] = copy(slot);
         return { changed: false, failure: null };
       }
       if (generationFloors[slot.id] === undefined) {
@@ -104,6 +104,7 @@
         physicalSlot.generation = Math.max(physicalSlot.generation, generationFloors[slot.id] + 1);
         generationFloors[slot.id] = physicalSlot.generation;
       }
+      tuple.generation = physicalSlot.generation;
       try {
         outputAdapter.applySlot(physicalSlot, copy(transition));
       } catch (error) {
@@ -126,7 +127,7 @@
 
     function transitionFor(slot, expiredParts) {
       var pending = pendingDispatches[slot.id];
-      if (pending !== undefined && sameCore(pending.tuple, coreTuple(slot))) {
+      if (pending !== undefined && sameActuator(pending.tuple, coreTuple(slot))) {
         return copy(pending.transition);
       }
       return {
@@ -157,7 +158,7 @@
     }
 
     function dispatch(atMs, expiredParts) {
-      var slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
+      var slots = ns.computeSlots(engine.readState(), normalizedConfig, atMs);
       var index;
       var slot;
       var transition;
@@ -217,6 +218,13 @@
         };
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
+      if (applied.rejected !== null) {
+        return {
+          ok: false,
+          code: applied.rejected.code,
+          detail: applied.rejected.detail
+        };
+      }
       expired = engine.expire(atMs, false);
       if (applied.ignoredReason === 'absent_event' && !expired.changed) {
         return {

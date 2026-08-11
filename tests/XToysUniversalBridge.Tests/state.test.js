@@ -349,3 +349,216 @@ test('snapshots are deep copies that cannot mutate the engine', function () {
 
   assert.equal(engine.snapshot().events[eventKey('bridge-a', 'attack')][0].target.intensity, 40);
 });
+
+test('bounds active event identities atomically and reuses capacity after stop or expiry', function () {
+  var engine = buildAndCreateEngine();
+  var before;
+  var rejected;
+  var replacement;
+  var index;
+
+  for (index = 0; index < 128; index += 1) {
+    assert.equal(engine.applyMessage(message('play', {
+      eventId: 'event-' + index,
+      sequence: 1,
+      targets: [target('vagina', 1000)]
+    }), 0, false).rejected, null);
+  }
+  before = engine.snapshot();
+  rejected = engine.applyMessage(message('play', {
+    eventId: 'event-128',
+    sequence: 1,
+    targets: [target('vagina', 1000)]
+  }), 10, false);
+
+  assert.equal(rejected.changed, false);
+  assert.equal(rejected.rejected.code, 'state_capacity_exceeded');
+  assert.deepEqual(plain(rejected.changedParts), []);
+  assert.deepEqual(plain(engine.snapshot()), plain(before));
+
+  assert.equal(engine.applyMessage(message('stop', {
+    eventId: 'event-0'
+  }), 10, false).changed, true);
+  replacement = engine.applyMessage(message('play', {
+    eventId: 'event-128',
+    sequence: 1,
+    targets: [target('vagina', 1000)]
+  }), 10, false);
+  assert.equal(replacement.rejected, null);
+  assert.equal(Object.keys(engine.snapshot().events).length, 128);
+
+  engine = buildAndCreateEngine();
+  for (index = 0; index < 128; index += 1) {
+    engine.applyMessage(message('play', {
+      eventId: 'expiring-' + index,
+      sequence: 1,
+      targets: [target('vagina', 100)]
+    }), 0, false);
+  }
+  replacement = engine.applyMessage(message('play', {
+    eventId: 'after-expiry',
+    sequence: 1,
+    targets: [target('vagina', 1000)]
+  }), 100, false);
+  assert.equal(replacement.rejected, null);
+});
+
+test('bounds total active event targets and leaves state unchanged on rejection', function () {
+  var engine = buildAndCreateEngine();
+  var targets = [];
+  var before;
+  var rejected;
+  var eventIndex;
+  var targetIndex;
+
+  for (targetIndex = 0; targetIndex < 32; targetIndex += 1) {
+    targets.push(target('vagina', 1000));
+  }
+  for (eventIndex = 0; eventIndex < 8; eventIndex += 1) {
+    assert.equal(engine.applyMessage(message('play', {
+      eventId: 'wide-' + eventIndex,
+      sequence: 1,
+      targets: targets
+    }), 0, false).rejected, null);
+  }
+  before = engine.snapshot();
+  rejected = engine.applyMessage(message('play', {
+    eventId: 'one-too-many',
+    sequence: 1,
+    targets: [target('vagina', 1000)]
+  }), 1, false);
+
+  assert.equal(rejected.changed, false);
+  assert.equal(rejected.rejected.code, 'state_capacity_exceeded');
+  assert.deepEqual(plain(engine.snapshot()), plain(before));
+});
+
+test('bounds baseline sources while allowing an existing source to replace or clear', function () {
+  var engine = buildAndCreateEngine();
+  var before;
+  var rejected;
+  var index;
+
+  for (index = 0; index < 64; index += 1) {
+    assert.equal(engine.applyMessage(message('set_baseline', {
+      source: 'baseline-' + index,
+      sequence: 1,
+      targets: []
+    }), 0, false).rejected, null);
+  }
+  before = engine.snapshot();
+  rejected = engine.applyMessage(message('set_baseline', {
+    source: 'baseline-64',
+    sequence: 1,
+    targets: []
+  }), 0, false);
+  assert.equal(rejected.rejected.code, 'state_capacity_exceeded');
+  assert.deepEqual(plain(engine.snapshot()), plain(before));
+
+  assert.equal(engine.applyMessage(message('set_baseline', {
+    source: 'baseline-0',
+    sequence: 2,
+    targets: [target('vagina', 0)]
+  }), 0, false).rejected, null);
+  assert.equal(engine.applyMessage(message('set_baseline', {
+    source: 'baseline-0',
+    sequence: 3,
+    targets: []
+  }), 0, false).rejected, null);
+});
+
+test('bounds total baseline targets and rejects replacement atomically', function () {
+  var engine = buildAndCreateEngine();
+  var parts = ['vagina', 'clitoris', 'vulva', 'anus'];
+  var before;
+  var rejected;
+  var sourceIndex;
+
+  for (sourceIndex = 0; sourceIndex < 64; sourceIndex += 1) {
+    assert.equal(engine.applyMessage(message('set_baseline', {
+      source: 'source-' + sourceIndex,
+      sequence: 1,
+      targets: parts.map(function (part) { return target(part, 0); })
+    }), 0, false).rejected, null);
+  }
+  before = engine.snapshot();
+  rejected = engine.applyMessage(message('set_baseline', {
+    source: 'source-0',
+    sequence: 2,
+    targets: parts.concat(['urethra']).map(function (part) { return target(part, 0); })
+  }), 0, false);
+
+  assert.equal(rejected.changed, false);
+  assert.equal(rejected.rejected.code, 'state_capacity_exceeded');
+  assert.deepEqual(plain(engine.snapshot()), plain(before));
+});
+
+test('copy-on-write updates only the changed event path and owns accepted targets', function () {
+  var engine = buildAndCreateEngine();
+  var firstMessage = message('play', {
+    eventId: 'first', sequence: 1, targets: [target('vagina')]
+  });
+  var firstKey = eventKey('bridge-a', 'first');
+  var secondKey = eventKey('bridge-a', 'second');
+  var before;
+  var after;
+
+  engine.applyMessage(firstMessage, 0, false);
+  engine.applyMessage(message('play', {
+    eventId: 'second', sequence: 1, targets: [target('clitoris')]
+  }), 0, false);
+  before = engine.readState();
+  firstMessage.targets[0].intensity = 99;
+  engine.applyMessage(message('update', {
+    eventId: 'first', sequence: 2, targets: [target('anus')]
+  }), 10, false);
+  after = engine.readState();
+
+  assert.notStrictEqual(after.events, before.events);
+  assert.notStrictEqual(after.events[firstKey], before.events[firstKey]);
+  assert.strictEqual(after.events[secondKey], before.events[secondKey]);
+  assert.strictEqual(after.baseline, before.baseline);
+  assert.equal(before.events[firstKey][0].sequence, 1);
+  assert.equal(before.events[firstKey][0].target.intensity, 40);
+  assert.equal(after.events[firstKey][0].sequence, 2);
+  assert.equal(after.events[firstKey][0].target.part, 'anus');
+});
+
+test('expiry keeps the internal events map when no entry reaches its boundary', function () {
+  var engine = buildAndCreateEngine();
+  var events;
+
+  engine.applyMessage(message('play', {
+    eventId: 'long', sequence: 1, targets: [target('vagina', 1000)]
+  }), 0, false);
+  events = engine.readState().events;
+
+  assert.equal(engine.expire(1, false).changed, false);
+  assert.strictEqual(engine.readState().events, events);
+  assert.equal(engine.expire(500, false).changed, false);
+  assert.strictEqual(engine.readState().events, events);
+  assert.equal(engine.expire(999, false).changed, false);
+  assert.strictEqual(engine.readState().events, events);
+});
+
+test('live state operations omit snapshots while dry runs and previews retain them', function () {
+  var engine = buildAndCreateEngine();
+  var live = engine.applyMessage(message('play', {
+    eventId: 'live', sequence: 1, targets: [target('vagina')]
+  }), 0, false);
+  var ignored = engine.applyMessage(message('update', {
+    eventId: 'live', sequence: 1, targets: [target('anus')]
+  }), 1, false);
+  var dryRun = engine.applyMessage(message('play', {
+    eventId: 'dry', sequence: 1, targets: [target('anus')]
+  }), 1, true);
+  var preview = engine.applyMessage(message('test', {
+    targets: [target('clitoris')]
+  }), 1, false);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(live, 'snapshot'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(ignored, 'snapshot'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(engine.expire(1, false), 'snapshot'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(dryRun, 'snapshot'), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(preview, 'snapshot'), true);
+});

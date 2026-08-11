@@ -101,7 +101,9 @@ xtoysBridgeTick();
 | `xthb-output-15` | `{xthb-slot-15-value}` / `{xthb-slot-15-ramp-seconds}` / `{xthb-slot-15-frequency}` | `{xthb-slot-15-direction-code} == 1` | `{xthb-slot-15-direction-code} == -1` |
 | `xthb-output-16` | `{xthb-slot-16-value}` / `{xthb-slot-16-ramp-seconds}` / `{xthb-slot-16-frequency}` | `{xthb-slot-16-direction-code} == 1` | `{xthb-slot-16-direction-code} == -1` |
 
-`xthb-slot-NN-generation` 由运行时写入，用于防止旧调度结果覆盖新结果；它不是设备 Action 的值。关闭未使用槽时，仍保留相应 Job 和配置槽，且不把设备接到它们。
+`xthb-slot-NN-generation` 是运行时单调递增的**物理下发令牌**，用于防止旧调度结果覆盖新结果；它不是设备 Action 的值，也不会仅凭逻辑事件序号变化就强制重启 Job。若值、频率、方向和渐变时间都没有变化，运行时会保留最新逻辑状态但跳过该槽的变量写入与 `updateJob`。失败重试、手动测试、强制同步和全局停止仍会显式下发。
+
+因此，一个槽的逻辑状态 generation 可能已经推进，而 XToys 中的 `xthb-slot-NN-generation` 仍保持上次真正下发的令牌；下一次物理变化或强制下发会使用严格更大的令牌。关闭未使用槽时，仍保留相应 Job 和配置槽，且不把设备接到它们。
 
 ## 4. Initial / Final Actions：硬件安全背板
 

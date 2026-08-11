@@ -21,13 +21,15 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 | --- | --- | --- |
 | `protocolVersion` | number | 必须为 `1`。 |
 | `command` | string | `play`、`update`、`stop`、`stop_all`、`set_baseline` 或 `test`。 |
-| `source` | string | 每条消息必填、非空；一个稳定的游戏/Bridge 标识。 |
-| `eventId` | string | `play`/`update` 必填；`stop` 可选。 |
+| `source` | string | 每条消息必填、非空；一个稳定的游戏/Bridge 标识；除 `stop_all` 外最多 128 个字符。 |
+| `eventId` | string | `play`/`update` 必填；`stop` 可选；最多 128 个字符。 |
 | `sequence` | number | 同一有限事件的版本号；`set_baseline` 也必填。 |
-| `states` | string[] | 可选诊断标签，最多 32 个；不参与输出叠加。 |
+| `states` | string[] | 可选诊断标签，最多 32 个；每个标签最多 128 个字符；不参与输出叠加。 |
 | `targets` | array | 效果目标；命令是否要求它由下文决定，最多 32 个。 |
 
 `source + eventId` 是有限事件的身份：不同 `source` 可以使用相同的 `eventId` 而互不影响。对同一身份，`play` 或 `update` 只有严格大于当前 `sequence` 才会替换整个事件；重复或较小序号会被忽略。接受时间以 XToys 接受消息的时刻为准，有限事件在 `acceptedAt + durationMs` 到期。
+
+超过上述单字符串限制的普通消息分别返回 `identifier_too_long` 或 `state_label_too_long`。`stop_all` 是紧急归零命令：它仍校验载荷大小、JSON、协议版本、命令、非空 `source`，以及 `states` 的数组类型和最多 32 项限制，但不会因 `source` 或状态标签超过 128 个字符而被阻止。
 
 基线按 `source` 单独保存。一个较新的 `set_baseline` 用该 `source` 的**完整快照**替换旧快照，遗漏的部位会被清除；其 `sequence` 也必须严格递增。`stop` 只操作同一 `source` 的事件。`stop_all` 不按 `source` 区分，会清除全部来源的当前基线和有限事件，但会**保留**每个 `source` 已接受的基线 `sequence` 栅栏。因此，`stop_all` 之后同一 `source` 的下一条 `set_baseline` 仍必须使用大于停机前已接受序号的 `sequence`。重启后的 Bridge 必须持久化并递增该序号，或者改用新的 `source` 身份。
 
@@ -147,8 +149,12 @@ XToys 先将虚拟组权重、叶子到槽的路由权重和 `globalMultiplier` 
 
 - 外层映射得到的 `payload` 字符串最多 32768 个字符（32 KiB）。
 - 一条消息最多 32 个 `targets`、最多 32 个 `states` 标签。
+- 除紧急 `stop_all` 外，`source` 与 `eventId` 最多 128 个字符，每个 `states` 标签最多 128 个字符；超限分别返回 `identifier_too_long` 或 `state_label_too_long`。
+- 同时有效的有限事件身份最多 128 个，这些事件内仍未到期的目标条目合计最多 256 个。
+- 基线 sequence 来源最多保留 64 个（包括当前为空但仍保留 sequence 栅栏的来源），当前基线目标条目合计最多 256 个。
 - 有限事件时长及每个渐变/脉冲时间字段最大 600000 ms。
+- 超过保留状态容量时返回 `state_capacity_exceeded`。候选更新会整体拒绝，不会部分写入逻辑状态、变量或 XToys Job；停止、到期清理、清空现有基线与 `stop_all` 不受容量门限制。
 - 无效 JSON、未知命令/部位/组、缺失必填字段、无效数值或方向会被拒绝，且不会修改当前输出状态。
-- `stop_all` 仍会验证外层 `payload` 长度、JSON 对象、`protocolVersion`、支持的 `command` 和非空 `source`。若提供 `states`，它仍必须是最多 32 个字符串的数组。只有 `targets` 及 XToys 配置验证会被绕过，以便在配置无效或 targets 损坏时仍可请求全停。
+- `stop_all` 仍会验证外层 `payload` 长度、JSON 对象、`protocolVersion`、支持的 `command` 和非空 `source`。若提供 `states`，它仍必须是最多 32 个字符串的数组。`targets`、XToys 配置验证以及上述单字符串存储长度会被绕过，以便在配置无效、targets 损坏或诊断文本过长时仍可请求全停。
 
 XToys 模板配置与 Webhook/Job 接线请见 [一次性 XToys 模板配置](xtoys-template-setup.md)。
