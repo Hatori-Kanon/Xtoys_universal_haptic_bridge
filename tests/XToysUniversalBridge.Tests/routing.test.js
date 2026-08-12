@@ -252,27 +252,59 @@ test('adaptive foreground uses identity to break equal acceptance and generation
   assert.equal(slot.transientWinner.target.part, 'clitoris');
 });
 
-test('removing the latest adaptive foreground reveals an active different-part event on recomputation', function () {
-  var state = snapshot({}, {
-    earlier: [transient('clitoris', {
-      eventId: 'earlier', intensity: 20, acceptedAt: 1000,
-      retrigger: retrigger(), cadence: cadence()
-    })],
-    latest: [transient('vagina', {
-      eventId: 'latest', intensity: 40, acceptedAt: 1100,
+test('expiry of the latest adaptive foreground reveals an active different-part ordinary event', function () {
+  var engine = runtime.createStateEngine();
+  var ordinary = parse({
+    protocolVersion: 1,
+    command: 'play',
+    source: 'ordinary-source',
+    eventId: 'ordinary',
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 80, durationMs: 1000 }]
+  });
+  var adaptive = parse({
+    protocolVersion: 1,
+    command: 'play',
+    source: 'adaptive-source',
+    eventId: 'adaptive',
+    sequence: 1,
+    targets: [{
+      part: 'vagina', intensity: 20, durationMs: 200,
+      rampUpMs: 30, rampDownMs: 20, retrigger: retrigger()
+    }]
+  });
+  var initial;
+  var afterExpiry;
+
+  assert.equal(ordinary.ok, true);
+  assert.equal(adaptive.ok, true);
+  engine.applyMessage(ordinary.message, 0, false);
+  engine.applyMessage(adaptive.message, 100, false);
+  initial = slotsFor(runtime, engine.snapshot(), validatedConfig(), 100)[0];
+  engine.expire(300, false);
+  afterExpiry = slotsFor(runtime, engine.snapshot(), validatedConfig(), 300)[0];
+
+  assert.equal(initial.foregroundWinner.eventId, 'adaptive');
+  assert.equal(initial.transientWinner.target.part, 'vagina');
+  assert.equal(afterExpiry.foregroundWinner, null);
+  assert.equal(afterExpiry.transientWinner.eventId, 'ordinary');
+  assert.equal(afterExpiry.transientWinner.target.part, 'clitoris');
+  assert.equal(afterExpiry.value, 40);
+});
+
+test('group adaptive foreground uses leaf-inclusive identity for equal candidate contributions', function () {
+  var slot = slotsFor(runtime, snapshot({}, {
+    group: [transient('genitals', {
+      eventId: 'group', intensity: 100, acceptedAt: 1000, generation: 2,
       retrigger: retrigger(), cadence: cadence()
     })]
-  });
-  var initial = slotsFor(runtime, state, validatedConfig(), 1100)[0];
+  }), validatedConfig(function (value) {
+    value.groups.genitals = { clitoris: 0.5, vagina: 1 };
+  }), 1000)[0];
 
-  delete state.events.latest;
-  var afterRemoval = slotsFor(runtime, state, validatedConfig(), 1101)[0];
-
-  assert.equal(initial.foregroundWinner.eventId, 'latest');
-  assert.equal(initial.transientWinner.target.part, 'vagina');
-  assert.equal(afterRemoval.foregroundWinner.eventId, 'earlier');
-  assert.equal(afterRemoval.transientWinner.target.part, 'clitoris');
-  assert.equal(afterRemoval.value, 10);
+  assert.equal(slot.foregroundWinner.eventId, 'group');
+  assert.equal(slot.transientWinner.target.part, 'genitals');
+  assert.equal(slot.value, 25);
 });
 
 test('mixes only baseline and transient winners using exact boost, max, and replace values', function () {
