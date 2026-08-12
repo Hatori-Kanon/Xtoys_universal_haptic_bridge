@@ -1835,6 +1835,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var lastSlots = {};
     var lastTuples = {};
     var pendingDispatches = {};
+    var hapticPendingDispatches = {};
     var generationFloors = {};
     var slotEnvelopes = {};
     var recentFailures = [];
@@ -1905,27 +1906,33 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     function prepareHapticSlot(slot, atMs) {
       var key = foregroundKey(slot);
       var envelope = slotEnvelopes[slot.id];
+      var pending = hapticPendingDispatches[slot.id];
       var previous = lastSlots[slot.id];
       var winner = slot.foregroundWinner;
       var plan;
       var physical;
       if (key === null) {
         delete slotEnvelopes[slot.id];
+        delete hapticPendingDispatches[slot.id];
         return { slot: slot, transition: null, token: null };
       }
       if (envelope === undefined || envelope.ownerKey !== key) {
+        delete hapticPendingDispatches[slot.id];
         plan = ns.envelopePlan(winner.target, winner.cadence);
         if (previous === undefined ||
             (previous.transientWinner === null && previous.value === slot.baselineValue)) {
           slotEnvelopes[slot.id] = {
             ownerKey: key, ownerGeneration: winner.generation,
-            phase: 'target', riseAt: atMs, floorApplied: true,
+            phase: 'rise', riseAt: atMs, floorApplied: true,
             dropPercent: plan.dropPercent, fallMs: plan.fallMs, riseMs: plan.riseMs
           };
           return {
             slot: slot,
             transition: { rampSeconds: plan.riseMs / 1000 },
-            token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'target' }
+            token: {
+              slotId: slot.id, ownerKey: key,
+              ownerGeneration: winner.generation, phase: 'target'
+            }
           };
         }
         physical = copy(slot);
@@ -1934,20 +1941,34 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         physical.frequency = slot.baselineFrequency;
         slotEnvelopes[slot.id] = {
           ownerKey: key, ownerGeneration: winner.generation,
-          phase: 'fall', riseAt: atMs + plan.fallMs, floorApplied: false,
+          phase: 'fall', riseAt: null, floorApplied: false,
           dropPercent: plan.dropPercent, fallMs: plan.fallMs, riseMs: plan.riseMs
         };
         return {
           slot: physical,
           transition: { rampSeconds: plan.fallMs / 1000 },
-          token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'fall' }
+          token: {
+            slotId: slot.id, ownerKey: key,
+            ownerGeneration: winner.generation, phase: 'fall'
+          }
+        };
+      }
+      if (pending !== undefined && pending.ownerKey === key &&
+          pending.ownerGeneration === winner.generation) {
+        return {
+          slot: copy(pending.slot),
+          transition: copy(pending.transition),
+          token: copy(pending.token)
         };
       }
       if (envelope.phase === 'fall' && envelope.floorApplied && atMs >= envelope.riseAt) {
         return {
           slot: slot,
           transition: { rampSeconds: envelope.riseMs / 1000 },
-          token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'target' }
+          token: {
+            slotId: slot.id, ownerKey: key,
+            ownerGeneration: winner.generation, phase: 'target'
+          }
         };
       }
       if (envelope.phase === 'fall') {
@@ -1958,25 +1979,45 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         return {
           slot: physical,
           transition: { rampSeconds: envelope.fallMs / 1000 },
-          token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'fall' }
+          token: {
+            slotId: slot.id, ownerKey: key,
+            ownerGeneration: winner.generation, phase: 'fall'
+          }
         };
       }
       return {
         slot: slot,
         transition: { rampSeconds: envelope.riseMs / 1000 },
-        token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'target' }
+        token: {
+          slotId: slot.id, ownerKey: key,
+          ownerGeneration: winner.generation, phase: 'target'
+        }
       };
     }
 
-    function confirmHapticDispatch(token) {
+    function confirmHapticDispatch(token, atMs) {
       var envelope = slotEnvelopes[token.slotId];
-      if (envelope !== undefined && envelope.ownerGeneration === token.ownerGeneration &&
-          token.phase === 'fall') {
-        envelope.floorApplied = true;
-      } else if (envelope !== undefined && envelope.ownerGeneration === token.ownerGeneration &&
-          token.phase === 'target') {
-        envelope.phase = 'target';
+      if (envelope !== undefined && envelope.ownerKey === token.ownerKey &&
+          envelope.ownerGeneration === token.ownerGeneration) {
+        if (token.phase === 'fall' && !envelope.floorApplied) {
+          envelope.floorApplied = true;
+          envelope.riseAt = atMs + envelope.fallMs;
+        } else if (token.phase === 'target') {
+          envelope.phase = 'target';
+        }
       }
+    }
+
+    function retainHapticFailure(prepared) {
+      var token = prepared.token;
+      hapticPendingDispatches[token.slotId] = {
+        ownerKey: token.ownerKey,
+        ownerGeneration: token.ownerGeneration,
+        phase: token.phase,
+        slot: copy(prepared.slot),
+        transition: copy(prepared.transition),
+        token: copy(token)
+      };
     }
 
     function dispatchResult(changedSlots, failures) {
@@ -2019,7 +2060,10 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
             : prepared.transition;
           applied = apply(prepared.slot, transition, false);
           if (applied.failure === null && prepared.token !== null) {
-            confirmHapticDispatch(prepared.token);
+            delete hapticPendingDispatches[slot.id];
+            confirmHapticDispatch(prepared.token, atMs);
+          } else if (applied.failure !== null && prepared.token !== null) {
+            retainHapticFailure(prepared);
           }
           if (applied.changed) {
             changed += 1;
@@ -2112,6 +2156,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var changed = 0;
       var failures = [];
       slotEnvelopes = {};
+      hapticPendingDispatches = {};
       engine.clearAll(false);
       slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
       for (index = 0; index < slots.length; index += 1) {
@@ -2183,6 +2228,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     runtime.forceResync = function () {
       lastTuples = {};
       pendingDispatches = {};
+      hapticPendingDispatches = {};
       return runtime.tick();
     };
 

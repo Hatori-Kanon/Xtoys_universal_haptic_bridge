@@ -521,6 +521,41 @@ test('first adaptive attack at baseline rises directly without a floor job', fun
   assert.equal(lastCall(subject, 1).transition.rampSeconds, 0.18);
 });
 
+test('failed first direct rise stays unconfirmed and retries the exact target tuple', function () {
+  var failFirstRise = true;
+  var subject = createSubject(1000, function (slot) {
+    if (failFirstRise && slot.id === 1 && slot.value === 30) {
+      failFirstRise = false;
+      throw new Error('first rise failed');
+    }
+  });
+  var failedRise;
+  var retriedRise;
+  var result = playAdaptive(subject, 'first-failure', 'clitoris', 60);
+  failedRise = lastCall(subject, 1);
+
+  assert.deepEqual(copy(result.dispatchFailures), [{
+    slotId: 1, code: 'adapter_apply_failed', detail: 'first rise failed'
+  }]);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'rise');
+  subject.loaded.setNow(1100);
+  subject.runtime.tick();
+  retriedRise = lastCall(subject, 1);
+  assert.deepEqual({
+    value: retriedRise.slot.value,
+    frequency: retriedRise.slot.frequency,
+    direction: retriedRise.slot.direction,
+    rampSeconds: retriedRise.transition.rampSeconds
+  }, {
+    value: failedRise.slot.value,
+    frequency: failedRise.slot.frequency,
+    direction: failedRise.slot.direction,
+    rampSeconds: failedRise.transition.rampSeconds
+  });
+  assert.equal(retriedRise.slot.generation > failedRise.slot.generation, true);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'target');
+});
+
 test('same physical target performs one floor then one generation-safe rise', function () {
   var subject = createSubject(1000);
   playAdaptive(subject, 'first', 'clitoris', 60);
@@ -575,6 +610,76 @@ test('failed floor retries before any rise can advance', function () {
   subject.loaded.setNow(1600);
   subject.runtime.tick();
   assert.equal(lastCall(subject, 1).slot.value, 30);
+});
+
+test('delayed floor confirmation starts the rise deadline at first success', function () {
+  var remainingFloorFailures = 2;
+  var subject = createSubject(1000, function (slot) {
+    if (remainingFloorFailures > 0 && slot.id === 1 && slot.value < 30) {
+      remainingFloorFailures -= 1;
+      throw new Error('floor delayed');
+    }
+  });
+  var floorSuccessCount;
+  var confirmedRiseAt;
+  playAdaptive(subject, 'first-delayed', 'clitoris', 60);
+  subject.loaded.setNow(1400);
+  playAdaptive(subject, 'second-delayed', 'clitoris', 60);
+  subject.loaded.setNow(1700);
+  subject.runtime.tick();
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, false);
+  subject.loaded.setNow(1800);
+  subject.runtime.tick();
+  floorSuccessCount = callsFor(subject, 1).length;
+  confirmedRiseAt = subject.runtime.hapticSnapshot().slotEnvelopes[1].riseAt;
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, true);
+  assert.equal(confirmedRiseAt > 1800, true);
+  subject.loaded.setNow(1801);
+  subject.runtime.tick();
+  assert.equal(callsFor(subject, 1).length, floorSuccessCount);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'fall');
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].riseAt, confirmedRiseAt);
+  subject.loaded.setNow(Math.ceil(confirmedRiseAt));
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 30);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'target');
+});
+
+test('baseline mutation cannot replace an exact failed adaptive floor retry', function () {
+  var failFloor = false;
+  var subject = createSubject(1000, function (slot) {
+    if (failFloor && slot.id === 1 && slot.value < 30) {
+      failFloor = false;
+      throw new Error('floor before baseline');
+    }
+  });
+  var failedFloor;
+  var retriedFloor;
+  playAdaptive(subject, 'first-baseline', 'clitoris', 60);
+  subject.loaded.setNow(1400);
+  failFloor = true;
+  playAdaptive(subject, 'second-baseline', 'clitoris', 60);
+  failedFloor = lastCall(subject, 1);
+  subject.loaded.setNow(1500);
+  subject.runtime.handle(payload('set_baseline', {
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 40, frequency: 45 })]
+  }));
+  retriedFloor = lastCall(subject, 1);
+
+  assert.deepEqual({
+    value: retriedFloor.slot.value,
+    frequency: retriedFloor.slot.frequency,
+    direction: retriedFloor.slot.direction,
+    rampSeconds: retriedFloor.transition.rampSeconds
+  }, {
+    value: failedFloor.slot.value,
+    frequency: failedFloor.slot.frequency,
+    direction: failedFloor.slot.direction,
+    rampSeconds: failedFloor.transition.rampSeconds
+  });
+  assert.equal(retriedFloor.slot.generation > failedFloor.slot.generation, true);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, true);
 });
 
 test('failed rise keeps the confirmed floor phase and retries the exact target tuple', function () {
