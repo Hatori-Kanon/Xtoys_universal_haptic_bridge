@@ -92,6 +92,19 @@
     return next.identity < current.identity;
   }
 
+  function newerForeground(next, current) {
+    if (current === null) {
+      return true;
+    }
+    if (next.entry.acceptedAt !== current.entry.acceptedAt) {
+      return next.entry.acceptedAt > current.entry.acceptedAt;
+    }
+    if (next.entry.generation !== current.entry.generation) {
+      return next.entry.generation > current.entry.generation;
+    }
+    return next.identity < current.identity;
+  }
+
   function pulseIsOn(entry, nowMs) {
     var target = entry.target;
     var elapsed;
@@ -122,7 +135,9 @@
 
   function outputForSlot(slot, snapshot, nowMs) {
     var baselineWinner = null;
-    var transientWinner = null;
+    var ordinaryTransientWinner = null;
+    var foregroundWinner = null;
+    var transientWinner;
     var baselineEntries = ownValues(snapshot.baseline || {});
     var eventLists = ownValues(snapshot.events || {});
     var listIndex;
@@ -139,6 +154,9 @@
     var value = 0;
     var direction = null;
     var frequency = 0;
+    var baselineValue = 0;
+    var baselineFrequency = 0;
+    var baselineDirection = null;
     var rampUpMs = 0;
     var rampDownMs = 0;
     var pulseOnMs = 0;
@@ -174,8 +192,11 @@
               if (routeWeight !== undefined) {
                 next = candidate(entry, slot.type, routeWeight, part.weight, snapshot.config.globalMultiplier,
                   contributionIdentity(entry, 'transient', part.part));
-                if (newerTransient(next, transientWinner)) {
-                  transientWinner = next;
+                if (newerTransient(next, ordinaryTransientWinner)) {
+                  ordinaryTransientWinner = next;
+                }
+                if (entry.target.retrigger !== null && newerForeground(next, foregroundWinner)) {
+                  foregroundWinner = next;
                 }
               }
             }
@@ -184,6 +205,14 @@
       }
     }
 
+    transientWinner = foregroundWinner === null ? ordinaryTransientWinner : foregroundWinner;
+    if (baselineWinner !== null) {
+      baselineValue = baselineWinner.effectiveValue;
+      baselineFrequency = baselineWinner.entry.target.frequency;
+      if (slot.type === 'rotation') {
+        baselineDirection = baselineWinner.entry.target.rotateDirection;
+      }
+    }
     activeTransient = transientWinner !== null && pulseIsOn(transientWinner.entry, nowMs);
     if (baselineWinner !== null && activeTransient) {
       value = ns.mixValue(baselineWinner.effectiveValue, transientWinner.effectiveValue,
@@ -223,7 +252,11 @@
       pulseOnMs: pulseOnMs,
       pulseOffMs: pulseOffMs,
       baselineWinner: winnerMetadata(baselineWinner),
+      foregroundWinner: winnerMetadata(foregroundWinner),
       transientWinner: winnerMetadata(transientWinner),
+      baselineValue: baselineValue,
+      baselineFrequency: baselineFrequency,
+      baselineDirection: baselineDirection,
       generation: snapshot.generation
     };
   }

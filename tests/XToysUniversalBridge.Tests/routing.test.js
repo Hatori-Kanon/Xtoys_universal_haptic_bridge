@@ -37,7 +37,33 @@ function target(part, values) {
     pulseOffMs: data.pulseOffMs === undefined ? 0 : data.pulseOffMs,
     priority: data.priority === undefined ? 0 : data.priority,
     blend: data.blend || 'replace',
-    baselineBlend: data.baselineBlend || 'boost'
+    baselineBlend: data.baselineBlend || 'boost',
+    retrigger: data.retrigger === undefined ? null : data.retrigger
+  };
+}
+
+function retrigger(values) {
+  var data = values || {};
+  return {
+    mode: data.mode === undefined ? 'adaptive' : data.mode,
+    minDropPercent: data.minDropPercent === undefined ? 25 : data.minDropPercent,
+    maxDropPercent: data.maxDropPercent === undefined ? 100 : data.maxDropPercent,
+    minRampUpMs: data.minRampUpMs === undefined ? 30 : data.minRampUpMs,
+    minRampDownMs: data.minRampDownMs === undefined ? 20 : data.minRampDownMs,
+    textureThresholdMs: data.textureThresholdMs === undefined ? 150 : data.textureThresholdMs,
+    quietResetMs: data.quietResetMs === undefined ? 600 : data.quietResetMs
+  };
+}
+
+function cadence(values) {
+  var data = values || {};
+  return {
+    averageInterval: data.averageInterval === undefined ? null : data.averageInterval,
+    lastAttackAt: data.lastAttackAt === undefined ? 0 : data.lastAttackAt,
+    lastGeneration: data.lastGeneration === undefined ? 1 : data.lastGeneration,
+    mode: data.mode === undefined ? 'single' : data.mode,
+    quietResetMs: data.quietResetMs === undefined ? 600 : data.quietResetMs,
+    textureStartedAt: data.textureStartedAt === undefined ? null : data.textureStartedAt
   };
 }
 
@@ -59,7 +85,8 @@ function transient(part, values) {
     acceptedAt: data.acceptedAt === undefined ? 0 : data.acceptedAt,
     expiresAt: data.expiresAt === undefined ? 1000 : data.expiresAt,
     generation: data.generation === undefined ? 1 : data.generation,
-    target: target(part, data)
+    target: target(part, data),
+    cadence: data.cadence === undefined ? null : data.cadence
   };
 }
 
@@ -194,6 +221,60 @@ test('uses the documented stable transient tie-break order', function () {
   assert.equal(result[0].transientWinner.acceptedAt, 2);
 });
 
+test('newest adaptive foreground beats a stronger ordinary transient on a shared slot', function () {
+  var state = snapshot({}, {
+    strong: [transient('vagina', { intensity: 90, priority: 100, acceptedAt: 1000 })],
+    weak: [transient('clitoris', {
+      eventId: 'weak', intensity: 20, priority: 0, acceptedAt: 1100,
+      retrigger: retrigger(), cadence: cadence(300)
+    })]
+  });
+  var slot = slotsFor(runtime, state, validatedConfig(), 1100)[0];
+
+  assert.equal(slot.foregroundWinner.eventId, 'weak');
+  assert.equal(slot.transientWinner.target.part, 'clitoris');
+  assert.equal(slot.value, 10);
+});
+
+test('adaptive foreground uses identity to break equal acceptance and generation ties', function () {
+  var slot = slotsFor(runtime, snapshot({}, {
+    beta: [transient('vagina', {
+      eventId: 'beta', intensity: 80, acceptedAt: 1000, generation: 2,
+      retrigger: retrigger(), cadence: cadence()
+    })],
+    alpha: [transient('clitoris', {
+      eventId: 'alpha', intensity: 20, acceptedAt: 1000, generation: 2,
+      retrigger: retrigger(), cadence: cadence()
+    })]
+  }), validatedConfig(), 1000)[0];
+
+  assert.equal(slot.foregroundWinner.eventId, 'alpha');
+  assert.equal(slot.transientWinner.target.part, 'clitoris');
+});
+
+test('removing the latest adaptive foreground reveals an active different-part event on recomputation', function () {
+  var state = snapshot({}, {
+    earlier: [transient('clitoris', {
+      eventId: 'earlier', intensity: 20, acceptedAt: 1000,
+      retrigger: retrigger(), cadence: cadence()
+    })],
+    latest: [transient('vagina', {
+      eventId: 'latest', intensity: 40, acceptedAt: 1100,
+      retrigger: retrigger(), cadence: cadence()
+    })]
+  });
+  var initial = slotsFor(runtime, state, validatedConfig(), 1100)[0];
+
+  delete state.events.latest;
+  var afterRemoval = slotsFor(runtime, state, validatedConfig(), 1101)[0];
+
+  assert.equal(initial.foregroundWinner.eventId, 'latest');
+  assert.equal(initial.transientWinner.target.part, 'vagina');
+  assert.equal(afterRemoval.foregroundWinner.eventId, 'earlier');
+  assert.equal(afterRemoval.transientWinner.target.part, 'clitoris');
+  assert.equal(afterRemoval.value, 10);
+});
+
 test('mixes only baseline and transient winners using exact boost, max, and replace values', function () {
   assert.equal(runtime.mixValue(30, 20, 'boost'), 44);
   assert.equal(runtime.mixValue(30, 20, 'max'), 30);
@@ -227,6 +308,33 @@ test('resolves rotation speed with the same mixing rules and switches direction 
   assert.equal(offPhase.value, 15);
   assert.equal(offPhase.direction, 'clockwise');
   assert.equal(onPhase.frequency, 0);
+});
+
+test('resolved slot exposes the winning baseline actuator tuple', function () {
+  var slot = slotsFor(runtime, snapshot({
+    base: baseline('clitoris', {
+      intensity: 60, frequency: 45, rotateDirection: 'clockwise'
+    })
+  }), validatedConfig())[0];
+
+  assert.equal(slot.baselineValue, 30);
+  assert.equal(slot.baselineFrequency, 45);
+  assert.equal(slot.baselineDirection, null);
+});
+
+test('baseline metadata retains its frequency outside frequency-enabled slots and direction for rotation slots', function () {
+  var state = snapshot({
+    intensity: baseline('clitoris', { intensity: 60, frequency: 45 }),
+    rotation: baseline('vagina', { rotateSpeed: 30, rotateDirection: 'clockwise' })
+  });
+  var result = slotsFor(runtime, state, validatedConfig());
+
+  assert.equal(result[1].baselineValue, 15);
+  assert.equal(result[1].baselineFrequency, 45);
+  assert.equal(result[1].baselineDirection, null);
+  assert.equal(result[2].baselineValue, 15);
+  assert.equal(result[2].baselineFrequency, 0);
+  assert.equal(result[2].baselineDirection, 'clockwise');
 });
 
 test('uses exact pulse boundaries, rollover, and zero-duration pulse phases', function () {
@@ -282,8 +390,9 @@ test('returns the complete resolved schema for every physical slot', function ()
     })
   }, {}, 7), validatedConfig());
   var expectedKeys = [
-    'baselineWinner', 'direction', 'enabled', 'frequency', 'generation', 'id',
-    'pulseOffMs', 'pulseOnMs', 'rampDownMs', 'rampUpMs', 'transientWinner', 'type', 'value'
+    'baselineDirection', 'baselineFrequency', 'baselineValue', 'baselineWinner', 'direction',
+    'enabled', 'foregroundWinner', 'frequency', 'generation', 'id', 'pulseOffMs', 'pulseOnMs',
+    'rampDownMs', 'rampUpMs', 'transientWinner', 'type', 'value'
   ];
 
   assert.equal(result.length, 16);
@@ -299,8 +408,16 @@ test('returns the complete resolved schema for every physical slot', function ()
   assert.equal(result[0].pulseOnMs, 0);
   assert.equal(result[0].pulseOffMs, 0);
   assert.equal(result[0].baselineWinner.target.part, 'clitoris');
+  assert.equal(result[0].foregroundWinner, null);
+  assert.equal(result[0].baselineValue, 40);
+  assert.equal(result[0].baselineFrequency, 65);
+  assert.equal(result[0].baselineDirection, null);
   assert.equal(result[0].transientWinner, null);
   assert.equal(result[2].direction, null);
   assert.equal(result[2].baselineWinner, null);
+  assert.equal(result[2].foregroundWinner, null);
+  assert.equal(result[2].baselineValue, 0);
+  assert.equal(result[2].baselineFrequency, 0);
+  assert.equal(result[2].baselineDirection, null);
   assert.equal(result[2].transientWinner, null);
 });
