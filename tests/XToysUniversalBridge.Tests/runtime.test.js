@@ -37,6 +37,28 @@ function target(part, values) {
   return result;
 }
 
+function retrigger() {
+  return {
+    mode: 'adaptive', minDropPercent: 25, maxDropPercent: 100,
+    minRampUpMs: 30, minRampDownMs: 20,
+    textureThresholdMs: 150, quietResetMs: 600
+  };
+}
+
+function adaptiveValues(values) {
+  var result = {
+    intensity: 60, durationMs: 500, rampUpMs: 180, rampDownMs: 80,
+    retrigger: retrigger()
+  };
+  var key;
+  for (key in values || {}) {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      result[key] = values[key];
+    }
+  }
+  return result;
+}
+
 function payload(command, values) {
   var data = values || {};
   var result = {
@@ -75,6 +97,13 @@ function createSubject(now, applySlot) {
     calls: calls,
     logs: logs
   };
+}
+
+function playAdaptive(subject, eventId, part, intensity) {
+  return subject.runtime.handle(payload('play', {
+    eventId: eventId, sequence: 1,
+    targets: [target(part, adaptiveValues({ intensity: intensity }))]
+  }));
 }
 
 function callsFor(subject, slotId) {
@@ -478,6 +507,228 @@ test('physical tuple comparison ignores logical generation and retains latest ex
   assert.equal(callsFor(subject, 1).length, callsAfterPlay + 1);
   assert.equal(lastCall(subject, 1).slot.value, 0);
   assert.equal(lastCall(subject, 1).transition.rampSeconds, 0.7);
+});
+
+test('first adaptive attack at baseline rises directly without a floor job', function () {
+  var subject = createSubject(1000);
+  var result = subject.runtime.handle(payload('play', {
+    eventId: 'first', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({ intensity: 60 }))]
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(callsFor(subject, 1).length, 1);
+  assert.equal(lastCall(subject, 1).slot.value, 30);
+  assert.equal(lastCall(subject, 1).transition.rampSeconds, 0.18);
+});
+
+test('same physical target performs one floor then one generation-safe rise', function () {
+  var subject = createSubject(1000);
+  playAdaptive(subject, 'first', 'clitoris', 60);
+  subject.loaded.setNow(1400);
+  playAdaptive(subject, 'second', 'clitoris', 60);
+  assert.equal(lastCall(subject, 1).slot.value < 30, true);
+  var countAfterFloor = callsFor(subject, 1).length;
+  subject.loaded.setNow(1500);
+  subject.runtime.tick();
+  assert.equal(callsFor(subject, 1).length, countAfterFloor + 1);
+  assert.equal(lastCall(subject, 1).slot.value, 30);
+});
+
+test('failed floor retries before any rise can advance', function () {
+  var failFloor = false;
+  var result;
+  var failedFloorCall;
+  var retriedFloorCall;
+  var subject = createSubject(1000, function (slot) {
+    if (failFloor && slot.id === 1 && slot.value < 30) {
+      throw new Error('floor failed');
+    }
+  });
+  playAdaptive(subject, 'first', 'clitoris', 60);
+  subject.loaded.setNow(1400);
+  failFloor = true;
+  result = playAdaptive(subject, 'second', 'clitoris', 60);
+  failedFloorCall = lastCall(subject, 1);
+  assert.equal(failedFloorCall.slot.value < 30, true);
+  assert.deepEqual(copy(result.dispatchFailures), [{
+    slotId: 1, code: 'adapter_apply_failed', detail: 'floor failed'
+  }]);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'fall');
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, false);
+  failFloor = false;
+  subject.loaded.setNow(1500);
+  subject.runtime.tick();
+  retriedFloorCall = lastCall(subject, 1);
+  assert.deepEqual({
+    value: retriedFloorCall.slot.value,
+    frequency: retriedFloorCall.slot.frequency,
+    direction: retriedFloorCall.slot.direction,
+    rampSeconds: retriedFloorCall.transition.rampSeconds
+  }, {
+    value: failedFloorCall.slot.value,
+    frequency: failedFloorCall.slot.frequency,
+    direction: failedFloorCall.slot.direction,
+    rampSeconds: failedFloorCall.transition.rampSeconds
+  });
+  assert.equal(retriedFloorCall.slot.generation > failedFloorCall.slot.generation, true);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, true);
+  subject.loaded.setNow(1600);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 30);
+});
+
+test('failed rise keeps the confirmed floor phase and retries the exact target tuple', function () {
+  var failRise = false;
+  var subject = createSubject(1000, function (slot) {
+    if (failRise && slot.id === 1 && slot.value === 30) {
+      failRise = false;
+      throw new Error('rise failed');
+    }
+  });
+  var failedRise;
+  var retriedRise;
+  playAdaptive(subject, 'first-rise', 'clitoris', 60);
+  subject.loaded.setNow(1400);
+  playAdaptive(subject, 'second-rise', 'clitoris', 60);
+  failRise = true;
+  subject.loaded.setNow(1500);
+  subject.runtime.tick();
+  failedRise = lastCall(subject, 1);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'fall');
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, true);
+  subject.loaded.setNow(1600);
+  subject.runtime.tick();
+  retriedRise = lastCall(subject, 1);
+  assert.deepEqual({
+    value: retriedRise.slot.value,
+    frequency: retriedRise.slot.frequency,
+    direction: retriedRise.slot.direction,
+    rampSeconds: retriedRise.transition.rampSeconds
+  }, {
+    value: failedRise.slot.value,
+    frequency: failedRise.slot.frequency,
+    direction: failedRise.slot.direction,
+    rampSeconds: failedRise.transition.rampSeconds
+  });
+  assert.equal(retriedRise.slot.generation > failedRise.slot.generation, true);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'target');
+});
+
+test('tuple-suppressed floor still confirms before the envelope advances', function () {
+  var subject = createSubject(1000);
+  var profile = retrigger();
+  var callsAfterFirst;
+  var snapshot;
+  profile.minDropPercent = 0;
+  profile.maxDropPercent = 0;
+  profile.minRampUpMs = 30;
+  profile.minRampDownMs = 30;
+  subject.runtime.handle(payload('play', {
+    eventId: 'first-suppressed', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({
+      rampUpMs: 30, rampDownMs: 30, retrigger: profile
+    }))]
+  }));
+  callsAfterFirst = callsFor(subject, 1).length;
+  subject.loaded.setNow(1400);
+  subject.runtime.handle(payload('play', {
+    eventId: 'second-suppressed', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({
+      rampUpMs: 30, rampDownMs: 30, retrigger: profile
+    }))]
+  }));
+  assert.equal(callsFor(subject, 1).length, callsAfterFirst);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, true);
+  subject.loaded.setNow(1430);
+  subject.runtime.tick();
+  snapshot = subject.runtime.hapticSnapshot();
+  assert.equal(callsFor(subject, 1).length, callsAfterFirst);
+  assert.equal(snapshot.slotEnvelopes[1].phase, 'target');
+});
+
+test('expiry of an adaptive shared-slot owner resumes a still-valid different-part event', function () {
+  var subject = createSubject(1000);
+  var ownerKey;
+  subject.runtime.handle(payload('play', {
+    eventId: 'strong-vagina', sequence: 1,
+    targets: [target('vagina', {
+      intensity: 90, durationMs: 2000, rampUpMs: 40, rampDownMs: 50
+    })]
+  }));
+  assert.equal(lastCall(subject, 1).slot.value, 72);
+  subject.loaded.setNow(1100);
+  playAdaptive(subject, 'weak-clitoris', 'clitoris', 20);
+  ownerKey = JSON.stringify(['runtime-test', 'weak-clitoris', 'clitoris', 2]);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].ownerKey, ownerKey);
+  subject.loaded.setNow(1200);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 10);
+  subject.loaded.setNow(1600);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 72);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1], undefined);
+});
+
+test('runtime haptic snapshots combine logical diagnostics and defensive envelope copies', function () {
+  var subject = createSubject(1000);
+  var ownerKey = JSON.stringify(['runtime-test', 'diagnostic', 'clitoris', 1]);
+  var snapshot;
+  playAdaptive(subject, 'diagnostic', 'clitoris', 60);
+  snapshot = subject.runtime.hapticSnapshot();
+  assert.deepEqual(Object.keys(snapshot).sort(), [
+    'cadenceRecords', 'partOwners', 'slotEnvelopes'
+  ]);
+  assert.equal(snapshot.cadenceRecords[
+    JSON.stringify(['runtime-test', 'clitoris'])
+  ].mode, 'single');
+  assert.equal(snapshot.slotEnvelopes[1].ownerKey, ownerKey);
+  assert.deepEqual(Object.keys(snapshot.slotEnvelopes[1]).sort(), [
+    'dropPercent', 'fallMs', 'floorApplied', 'ownerGeneration',
+    'ownerKey', 'phase', 'riseAt', 'riseMs'
+  ]);
+  snapshot.cadenceRecords[JSON.stringify(['runtime-test', 'clitoris'])].mode = 'mutated';
+  snapshot.partOwners[JSON.stringify(['runtime-test', 'clitoris'])].adaptiveEventKey = 'mutated';
+  snapshot.slotEnvelopes[1].phase = 'mutated';
+  snapshot = subject.runtime.hapticSnapshot();
+  assert.equal(snapshot.cadenceRecords[
+    JSON.stringify(['runtime-test', 'clitoris'])
+  ].mode, 'single');
+  assert.equal(snapshot.partOwners[
+    JSON.stringify(['runtime-test', 'clitoris'])
+  ].adaptiveEventKey, JSON.stringify(['runtime-test', 'diagnostic']));
+  assert.equal(snapshot.slotEnvelopes[1].phase, 'target');
+  subject.runtime.stopAll();
+  assert.deepEqual(copy(subject.runtime.hapticSnapshot().slotEnvelopes), {});
+});
+
+test('ordinary attacks retain same-tuple suppression and exact ramp output', function () {
+  var subject = createSubject(1000);
+  var callsAfterFirst;
+  subject.runtime.handle(payload('play', {
+    eventId: 'ordinary-first', sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 60, frequency: 45, durationMs: 1000, rampUpMs: 180
+    })]
+  }));
+  assert.deepEqual({
+    value: lastCall(subject, 1).slot.value,
+    frequency: lastCall(subject, 1).slot.frequency,
+    direction: lastCall(subject, 1).slot.direction,
+    generation: lastCall(subject, 1).slot.generation,
+    rampSeconds: lastCall(subject, 1).transition.rampSeconds
+  }, {
+    value: 30, frequency: 45, direction: null, generation: 1, rampSeconds: 0.18
+  });
+  callsAfterFirst = callsFor(subject, 1).length;
+  subject.loaded.setNow(1100);
+  subject.runtime.handle(payload('play', {
+    eventId: 'ordinary-second', sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 60, frequency: 45, durationMs: 1000, rampUpMs: 180
+    })]
+  }));
+  assert.equal(callsFor(subject, 1).length, callsAfterFirst);
+  assert.deepEqual(copy(subject.runtime.hapticSnapshot().slotEnvelopes), {});
 });
 
 test('stopAll clears state and dispatches zero-ramp snapshots to every enabled slot', function () {

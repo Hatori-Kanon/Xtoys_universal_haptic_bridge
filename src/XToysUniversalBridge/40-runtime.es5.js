@@ -77,6 +77,7 @@
     var lastTuples = {};
     var pendingDispatches = {};
     var generationFloors = {};
+    var slotEnvelopes = {};
     var recentFailures = [];
     var runtime = {};
 
@@ -135,6 +136,90 @@
       };
     }
 
+    function foregroundKey(slot) {
+      var winner = slot.foregroundWinner;
+      return winner === null ? null : ns.compositeKey([
+        winner.source, winner.eventId, winner.target.part, winner.generation
+      ]);
+    }
+
+    function prepareHapticSlot(slot, atMs) {
+      var key = foregroundKey(slot);
+      var envelope = slotEnvelopes[slot.id];
+      var previous = lastSlots[slot.id];
+      var winner = slot.foregroundWinner;
+      var plan;
+      var physical;
+      if (key === null) {
+        delete slotEnvelopes[slot.id];
+        return { slot: slot, transition: null, token: null };
+      }
+      if (envelope === undefined || envelope.ownerKey !== key) {
+        plan = ns.envelopePlan(winner.target, winner.cadence);
+        if (previous === undefined ||
+            (previous.transientWinner === null && previous.value === slot.baselineValue)) {
+          slotEnvelopes[slot.id] = {
+            ownerKey: key, ownerGeneration: winner.generation,
+            phase: 'target', riseAt: atMs, floorApplied: true,
+            dropPercent: plan.dropPercent, fallMs: plan.fallMs, riseMs: plan.riseMs
+          };
+          return {
+            slot: slot,
+            transition: { rampSeconds: plan.riseMs / 1000 },
+            token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'target' }
+          };
+        }
+        physical = copy(slot);
+        physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+          winner.target.baselineBlend, plan.dropPercent);
+        physical.frequency = slot.baselineFrequency;
+        slotEnvelopes[slot.id] = {
+          ownerKey: key, ownerGeneration: winner.generation,
+          phase: 'fall', riseAt: atMs + plan.fallMs, floorApplied: false,
+          dropPercent: plan.dropPercent, fallMs: plan.fallMs, riseMs: plan.riseMs
+        };
+        return {
+          slot: physical,
+          transition: { rampSeconds: plan.fallMs / 1000 },
+          token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'fall' }
+        };
+      }
+      if (envelope.phase === 'fall' && envelope.floorApplied && atMs >= envelope.riseAt) {
+        return {
+          slot: slot,
+          transition: { rampSeconds: envelope.riseMs / 1000 },
+          token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'target' }
+        };
+      }
+      if (envelope.phase === 'fall') {
+        physical = copy(slot);
+        physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+          winner.target.baselineBlend, envelope.dropPercent);
+        physical.frequency = slot.baselineFrequency;
+        return {
+          slot: physical,
+          transition: { rampSeconds: envelope.fallMs / 1000 },
+          token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'fall' }
+        };
+      }
+      return {
+        slot: slot,
+        transition: { rampSeconds: envelope.riseMs / 1000 },
+        token: { slotId: slot.id, ownerGeneration: winner.generation, phase: 'target' }
+      };
+    }
+
+    function confirmHapticDispatch(token) {
+      var envelope = slotEnvelopes[token.slotId];
+      if (envelope !== undefined && envelope.ownerGeneration === token.ownerGeneration &&
+          token.phase === 'fall') {
+        envelope.floorApplied = true;
+      } else if (envelope !== undefined && envelope.ownerGeneration === token.ownerGeneration &&
+          token.phase === 'target') {
+        envelope.phase = 'target';
+      }
+    }
+
     function dispatchResult(changedSlots, failures) {
       return { changedSlots: changedSlots, failures: failures };
     }
@@ -161,6 +246,7 @@
       var slots = ns.computeSlots(engine.readState(), normalizedConfig, atMs);
       var index;
       var slot;
+      var prepared;
       var transition;
       var applied;
       var changed = 0;
@@ -168,8 +254,14 @@
       for (index = 0; index < slots.length; index += 1) {
         slot = slots[index];
         if (slot.enabled) {
-          transition = transitionFor(slot, expiredParts);
-          applied = apply(slot, transition, false);
+          prepared = prepareHapticSlot(slot, atMs);
+          transition = prepared.transition === null
+            ? transitionFor(prepared.slot, expiredParts)
+            : prepared.transition;
+          applied = apply(prepared.slot, transition, false);
+          if (applied.failure === null && prepared.token !== null) {
+            confirmHapticDispatch(prepared.token);
+          }
           if (applied.changed) {
             changed += 1;
           }
@@ -260,6 +352,7 @@
       var applied;
       var changed = 0;
       var failures = [];
+      slotEnvelopes = {};
       engine.clearAll(false);
       slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
       for (index = 0; index < slots.length; index += 1) {
@@ -283,6 +376,15 @@
 
     runtime.snapshot = function () {
       return engine.snapshot();
+    };
+
+    runtime.hapticSnapshot = function () {
+      var logical = engine.hapticSnapshot();
+      return {
+        cadenceRecords: copy(logical.cadenceRecords),
+        partOwners: copy(logical.partOwners),
+        slotEnvelopes: copy(slotEnvelopes)
+      };
     };
 
     runtime.recentFailures = function () {
