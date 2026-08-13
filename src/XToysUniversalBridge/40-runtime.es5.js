@@ -77,6 +77,7 @@
     var lastTuples = {};
     var pendingDispatches = {};
     var hapticPendingDispatches = {};
+    var resyncPendingDispatches = {};
     var generationFloors = {};
     var slotEnvelopes = {};
     var recentFailures = [];
@@ -152,6 +153,9 @@
       var winner = slot.foregroundWinner;
       var plan;
       var physical;
+      var targetPhase;
+      var transition;
+      var reversing;
       if (key === null) {
         delete slotEnvelopes[slot.id];
         delete hapticPendingDispatches[slot.id];
@@ -160,13 +164,39 @@
       if (envelope === undefined || envelope.ownerKey !== key) {
         delete hapticPendingDispatches[slot.id];
         plan = ns.envelopePlan(winner.target, winner.cadence);
-        if (previous === undefined ||
-            (previous.transientWinner === null && previous.value === slot.baselineValue)) {
-          slotEnvelopes[slot.id] = {
-            ownerKey: key, ownerGeneration: winner.generation,
-            phase: 'rise', riseAt: atMs, floorApplied: true,
-            dropPercent: plan.dropPercent, fallMs: plan.fallMs, riseMs: plan.riseMs
+        reversing = previous !== undefined && previous.direction !== null &&
+          slot.direction !== null && previous.direction !== slot.direction;
+        envelope = {
+          ownerKey: key, ownerGeneration: winner.generation,
+          phase: 'rise', riseAt: atMs, floorApplied: true,
+          dropPercent: plan.dropPercent, fallMs: plan.fallMs, riseMs: plan.riseMs,
+          textureStartedAt: winner.cadence.mode === 'texture'
+            ? winner.cadence.textureStartedAt : null,
+          pendingTexturePhase: null, pendingTextureSlot: null,
+          pendingTextureTransition: null
+        };
+        slotEnvelopes[slot.id] = envelope;
+        if (reversing) {
+          physical = copy(slot);
+          physical.value = 0;
+          physical.frequency = slot.baselineFrequency;
+          physical.direction = previous.direction;
+          envelope.phase = 'fall';
+          envelope.riseAt = null;
+          envelope.floorApplied = false;
+          return {
+            slot: physical,
+            transition: { rampSeconds: plan.fallMs / 1000 },
+            token: {
+              slotId: slot.id, ownerKey: key,
+              ownerGeneration: winner.generation, phase: 'fall'
+            }
           };
+        }
+        if (winner.cadence.mode === 'texture') {
+          envelope.phase = 'texture';
+        } else if (previous === undefined ||
+            (previous.transientWinner === null && previous.value === slot.baselineValue)) {
           return {
             slot: slot,
             transition: { rampSeconds: plan.riseMs / 1000 },
@@ -175,22 +205,61 @@
               ownerGeneration: winner.generation, phase: 'target'
             }
           };
+        } else {
+          physical = copy(slot);
+          physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+            winner.target.baselineBlend, plan.dropPercent);
+          physical.frequency = slot.baselineFrequency;
+          envelope.phase = 'fall';
+          envelope.riseAt = null;
+          envelope.floorApplied = false;
+          return {
+            slot: physical,
+            transition: { rampSeconds: plan.fallMs / 1000 },
+            token: {
+              slotId: slot.id, ownerKey: key,
+              ownerGeneration: winner.generation, phase: 'fall'
+            }
+          };
         }
+      }
+      if (winner.cadence.mode === 'texture' &&
+          !(envelope.phase === 'fall' &&
+            (!envelope.floorApplied || atMs < envelope.riseAt))) {
+        envelope.textureStartedAt = winner.cadence.textureStartedAt;
+        if (envelope.pendingTextureSlot !== null) {
+          return {
+            slot: copy(envelope.pendingTextureSlot),
+            transition: copy(envelope.pendingTextureTransition),
+            token: {
+              slotId: slot.id, ownerKey: key,
+              ownerGeneration: winner.generation,
+              phase: envelope.pendingTexturePhase
+            }
+          };
+        }
+        targetPhase = ns.textureTargetPhase(winner.cadence, atMs);
         physical = copy(slot);
-        physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
-          winner.target.baselineBlend, plan.dropPercent);
-        physical.frequency = slot.baselineFrequency;
-        slotEnvelopes[slot.id] = {
-          ownerKey: key, ownerGeneration: winner.generation,
-          phase: 'fall', riseAt: null, floorApplied: false,
-          dropPercent: plan.dropPercent, fallMs: plan.fallMs, riseMs: plan.riseMs
+        if (!targetPhase) {
+          physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+            winner.target.baselineBlend, winner.target.retrigger.minDropPercent);
+          physical.frequency = slot.baselineFrequency;
+        }
+        transition = {
+          rampSeconds: (targetPhase
+            ? winner.target.retrigger.minRampUpMs
+            : winner.target.retrigger.minRampDownMs) / 1000
         };
+        envelope.pendingTexturePhase = targetPhase ? 'target' : 'floor';
+        envelope.pendingTextureSlot = copy(physical);
+        envelope.pendingTextureTransition = copy(transition);
         return {
           slot: physical,
-          transition: { rampSeconds: plan.fallMs / 1000 },
+          transition: transition,
           token: {
             slotId: slot.id, ownerKey: key,
-            ownerGeneration: winner.generation, phase: 'fall'
+            ownerGeneration: winner.generation,
+            phase: envelope.pendingTexturePhase
           }
         };
       }
@@ -240,7 +309,13 @@
       var envelope = slotEnvelopes[token.slotId];
       if (envelope !== undefined && envelope.ownerKey === token.ownerKey &&
           envelope.ownerGeneration === token.ownerGeneration) {
-        if (token.phase === 'fall' && !envelope.floorApplied) {
+        if (envelope.pendingTextureSlot !== null &&
+            envelope.pendingTexturePhase === token.phase) {
+          envelope.pendingTexturePhase = null;
+          envelope.pendingTextureSlot = null;
+          envelope.pendingTextureTransition = null;
+          envelope.phase = token.phase;
+        } else if (token.phase === 'fall' && !envelope.floorApplied) {
           envelope.floorApplied = true;
           envelope.riseAt = atMs + envelope.fallMs;
         } else if (token.phase === 'target') {
@@ -251,6 +326,12 @@
 
     function retainHapticFailure(prepared) {
       var token = prepared.token;
+      var envelope = slotEnvelopes[token.slotId];
+      if (envelope !== undefined && envelope.ownerKey === token.ownerKey &&
+          envelope.ownerGeneration === token.ownerGeneration &&
+          envelope.pendingTextureSlot !== null) {
+        return;
+      }
       hapticPendingDispatches[token.slotId] = {
         ownerKey: token.ownerKey,
         ownerGeneration: token.ownerGeneration,
@@ -295,11 +376,23 @@
       for (index = 0; index < slots.length; index += 1) {
         slot = slots[index];
         if (slot.enabled) {
-          prepared = prepareHapticSlot(slot, atMs);
+          if (resyncPendingDispatches[slot.id] !== undefined) {
+            prepared = {
+              slot: copy(resyncPendingDispatches[slot.id].slot),
+              transition: copy(resyncPendingDispatches[slot.id].transition),
+              token: null,
+              resync: true
+            };
+          } else {
+            prepared = prepareHapticSlot(slot, atMs);
+          }
           transition = prepared.transition === null
             ? transitionFor(prepared.slot, expiredParts)
             : prepared.transition;
-          applied = apply(prepared.slot, transition, false);
+          applied = apply(prepared.slot, transition, prepared.resync === true);
+          if (prepared.resync === true && applied.failure === null) {
+            delete resyncPendingDispatches[slot.id];
+          }
           if (applied.failure === null && prepared.token !== null) {
             delete hapticPendingDispatches[slot.id];
             confirmHapticDispatch(prepared.token, atMs);
@@ -398,6 +491,7 @@
       var failures = [];
       slotEnvelopes = {};
       hapticPendingDispatches = {};
+      resyncPendingDispatches = {};
       engine.clearAll(false);
       slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
       for (index = 0; index < slots.length; index += 1) {
@@ -467,9 +561,37 @@
     };
 
     runtime.forceResync = function () {
-      lastTuples = {};
-      pendingDispatches = {};
-      hapticPendingDispatches = {};
+      var atMs = now();
+      var slots = ns.computeSlots(engine.readState(), normalizedConfig, atMs);
+      var index;
+      var slot;
+      var pending;
+      var physical;
+      var transition;
+      for (index = 0; index < slots.length; index += 1) {
+        slot = slots[index];
+        if (slot.enabled && resyncPendingDispatches[slot.id] === undefined) {
+          pending = pendingDispatches[slot.id];
+          if (pending !== undefined) {
+            physical = copy(pending.tuple);
+            physical.id = slot.id;
+            transition = copy(pending.transition);
+          } else if (lastSlots[slot.id] !== undefined) {
+            physical = copy(lastSlots[slot.id]);
+            transition = {
+              rampSeconds: lastTuples[slot.id] === undefined
+                ? 0 : lastTuples[slot.id].rampSeconds
+            };
+          } else {
+            physical = copy(slot);
+            transition = { rampSeconds: 0 };
+          }
+          resyncPendingDispatches[slot.id] = {
+            slot: physical,
+            transition: transition
+          };
+        }
+      }
       return runtime.tick();
     };
 

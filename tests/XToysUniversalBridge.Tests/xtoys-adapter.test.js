@@ -41,6 +41,30 @@ function payload(command, values) {
   return JSON.stringify(result);
 }
 
+function adaptiveTarget(part, values) {
+  var data = values || {};
+  var result = {
+    part: part,
+    intensity: 60,
+    frequency: 70,
+    durationMs: 1000,
+    rampUpMs: 180,
+    rampDownMs: 80,
+    retrigger: {
+      mode: 'adaptive', minDropPercent: 25, maxDropPercent: 100,
+      minRampUpMs: 30, minRampDownMs: 20,
+      textureThresholdMs: 150, quietResetMs: 600
+    }
+  };
+  var key;
+  for (key in data) {
+    if (Object.prototype.hasOwnProperty.call(data, key)) {
+      result[key] = data[key];
+    }
+  }
+  return result;
+}
+
 function enabledJobNames(actions) {
   return actions.map(function (action) { return action.job; });
 }
@@ -291,6 +315,47 @@ test('protocol stop_all leaves the public stop retryable when dispatch is incomp
   assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
 });
 
+test('lifecycle stop_all immediately zeros texture and starts later cadence from empty state', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ now: 1000, variables: variables });
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 40, frequency: 20 }]
+  }));
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'texture-before-stop-1', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }));
+  loaded.setNow(1100);
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'texture-before-stop-2', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }));
+  loaded.actions.length = 0;
+
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('stop_all')), 1);
+  assert.deepEqual(enabledJobNames(loaded.actions), [
+    'xthb-output-01', 'xthb-output-02', 'xthb-output-03'
+  ]);
+  [1, 2, 3].forEach(function (slotId) {
+    var suffix = '0' + slotId;
+    assert.equal(variables['xthb-slot-' + suffix + '-value'], 0);
+    assert.equal(variables['xthb-slot-' + suffix + '-frequency'], 0);
+    assert.equal(variables['xthb-slot-' + suffix + '-ramp-seconds'], 0);
+    assert.equal(variables['xthb-slot-' + suffix + '-direction-code'], 0);
+  });
+
+  loaded.actions.length = 0;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'first-after-stop', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  })), 1);
+  assert.equal(variables['xthb-slot-01-value'], 30);
+  assert.equal(variables['xthb-slot-01-frequency'], 70);
+  assert.equal(variables['xthb-slot-01-ramp-seconds'], 0.18);
+});
+
 test('reload rejects bad configuration atomically and safely zeros outputs removed by a valid config', function () {
   var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
   var loaded = loadRuntime({ variables: variables });
@@ -331,6 +396,40 @@ test('reload rejects bad configuration atomically and safely zeros outputs remov
     targets: [{ part: 'clitoris', intensity: 80 }]
   }));
   assert.deepEqual(enabledJobNames(loaded.actions), ['xthb-output-02']);
+});
+
+test('lifecycle valid reload clears texture output and installs a stopped empty runtime', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ now: 1000, variables: variables });
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'reload-texture-1', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }));
+  loaded.setNow(1100);
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'reload-texture-2', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }));
+  loaded.actions.length = 0;
+
+  assert.equal(loaded.context.xtoysBridgeReloadConfig(), 1);
+  assert.deepEqual(enabledJobNames(loaded.actions), [
+    'xthb-output-01', 'xthb-output-02', 'xthb-output-03'
+  ]);
+  assert.equal(variables['xthb-slot-01-value'], 0);
+  assert.equal(variables['xthb-slot-01-frequency'], 0);
+  loaded.actions.length = 0;
+  assert.equal(loaded.context.xtoysBridgeTick(), 0);
+  assert.deepEqual(loaded.actions, []);
+  assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
+
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'first-after-reload', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  })), 1);
+  assert.equal(variables['xthb-slot-01-value'], 30);
+  assert.equal(variables['xthb-slot-01-frequency'], 70);
 });
 
 test('reload keeps the old runtime when an output removed by the new config cannot be zeroed', function () {
@@ -391,6 +490,81 @@ test('failed multi-slot reload restores outputs zeroed before the failure', func
   ]);
   assert.equal(variables['xthb-slot-01-value'], 40);
   assert.equal(variables['xthb-slot-02-value'], 20);
+});
+
+test('lifecycle failed reload reasserts the physical texture tuple and retries an exact failed resync', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ now: 1000, variables: variables });
+  var nextConfig = fixtureConfig();
+  var failRemovedSlotTwo = false;
+  var failRestoreSlotOne = false;
+  var physical;
+  var failedGeneration;
+  var originalCallAction = loaded.context.callAction;
+  loaded.context.callAction = function (action) {
+    originalCallAction(action);
+    if (failRemovedSlotTwo && action.job === 'xthb-output-02') {
+      failRemovedSlotTwo = false;
+      throw new Error('removed slot zero failed');
+    }
+    if (failRestoreSlotOne && action.job === 'xthb-output-01') {
+      failRestoreSlotOne = false;
+      throw new Error('old texture resync failed');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 40, frequency: 20 }]
+  }));
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'failed-reload-texture-1', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }));
+  loaded.setNow(1100);
+  loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'failed-reload-texture-2', sequence: 1,
+    targets: [adaptiveTarget('clitoris')]
+  }));
+  physical = {
+    value: variables['xthb-slot-01-value'],
+    frequency: variables['xthb-slot-01-frequency'],
+    direction: variables['xthb-slot-01-direction-code'],
+    ramp: variables['xthb-slot-01-ramp-seconds'],
+    generation: variables['xthb-slot-01-generation']
+  };
+  nextConfig.slots[1].enabled = false;
+  variables['xthb-config-json'] = JSON.stringify(nextConfig);
+  loaded.setNow(1200);
+  failRemovedSlotTwo = true;
+  failRestoreSlotOne = true;
+
+  assert.equal(loaded.context.xtoysBridgeReloadConfig(), 0);
+  assert.equal(variables['xthb-slot-01-value'], physical.value);
+  assert.equal(variables['xthb-slot-01-frequency'], physical.frequency);
+  assert.equal(variables['xthb-slot-01-direction-code'], physical.direction);
+  assert.equal(variables['xthb-slot-01-ramp-seconds'], physical.ramp);
+  failedGeneration = variables['xthb-slot-01-generation'];
+  assert.ok(failedGeneration > physical.generation);
+
+  loaded.actions.length = 0;
+  loaded.setNow(1300);
+  assert.equal(loaded.context.xtoysBridgeTick() > 0, true);
+  assert.equal(variables['xthb-slot-01-value'], physical.value);
+  assert.equal(variables['xthb-slot-01-frequency'], physical.frequency);
+  assert.equal(variables['xthb-slot-01-direction-code'], physical.direction);
+  assert.equal(variables['xthb-slot-01-ramp-seconds'], physical.ramp);
+  assert.ok(variables['xthb-slot-01-generation'] > failedGeneration);
+
+  loaded.actions.length = 0;
+  loaded.setNow(1400);
+  loaded.context.xtoysBridgeTick();
+  assert.equal(variables['xthb-slot-01-value'], 38);
+  assert.equal(variables['xthb-slot-01-frequency'], 20);
+  loaded.setNow(1500);
+  loaded.context.xtoysBridgeTick();
+  assert.equal(variables['xthb-slot-01-value'], 44);
+  assert.equal(variables['xthb-slot-01-frequency'], 70);
 });
 
 test('failed reload completing a prior partial stop becomes fully stopped after resync', function () {
