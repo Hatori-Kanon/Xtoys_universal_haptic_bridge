@@ -19,10 +19,10 @@ function loadConfig() {
   return JSON.parse(fs.readFileSync(configFile, 'utf8'));
 }
 
-function createRuntime(namespace, config) {
+function createRuntime(namespace, config, adapter, now) {
   return namespace.createRuntime(config, {
-    applySlot: function () {}
-  }, function () { return 0; });
+    applySlot: adapter || function () {}
+  }, now || function () { return 0; });
 }
 
 function target() {
@@ -42,6 +42,24 @@ function payload(command, eventId, sequence) {
     sequence: sequence,
     targets: [target()]
   });
+}
+
+function adaptivePayload(command, eventId, sequence) {
+  var message = JSON.parse(payload(command, eventId, sequence));
+  message.targets[0].intensity = 60;
+  message.targets[0].durationMs = 600000;
+  message.targets[0].rampUpMs = 180;
+  message.targets[0].rampDownMs = 80;
+  message.targets[0].retrigger = {
+    mode: 'adaptive',
+    minDropPercent: 25,
+    maxDropPercent: 100,
+    minRampUpMs: 30,
+    minRampDownMs: 20,
+    textureThresholdMs: 150,
+    quietResetMs: 600
+  };
+  return JSON.stringify(message);
 }
 
 function milliseconds(started) {
@@ -101,6 +119,56 @@ function benchmarkTicks(namespace, config, activeEvents, iterations) {
   };
 }
 
+function benchmarkAdaptiveSamePart(namespace, config, updates) {
+  var adapterCalls = 0;
+  var now = 0;
+  var runtime = createRuntime(namespace, config, function () {
+    adapterCalls += 1;
+  }, function () { return now; });
+  var index;
+  var snapshot;
+  var started;
+  runtime.handle(adaptivePayload('play', 'adaptive-same-part', 1));
+  started = process.hrtime.bigint();
+  for (index = 2; index <= updates + 1; index += 1) {
+    now = (index - 1) * 50;
+    runtime.handle(adaptivePayload('update', 'adaptive-same-part', index));
+  }
+  snapshot = runtime.hapticSnapshot();
+  return {
+    updates: updates,
+    cadenceRecords: Object.keys(snapshot.cadenceRecords || {}).length,
+    envelopeSlots: Object.keys(snapshot.slotEnvelopes || {}).length,
+    adapterCalls: adapterCalls,
+    milliseconds: milliseconds(started)
+  };
+}
+
+function benchmarkEnvelopes(namespace, config, updates) {
+  var adapterCalls = 0;
+  var now = 0;
+  var runtime = createRuntime(namespace, config, function () {
+    adapterCalls += 1;
+  }, function () { return now; });
+  var index;
+  var snapshot;
+  var started;
+  runtime.handle(adaptivePayload('play', 'adaptive-envelopes', 1));
+  started = process.hrtime.bigint();
+  for (index = 1; index <= updates; index += 1) {
+    now = index * 50;
+    runtime.tick();
+  }
+  snapshot = runtime.hapticSnapshot();
+  return {
+    updates: updates,
+    cadenceRecords: Object.keys(snapshot.cadenceRecords || {}).length,
+    envelopeSlots: Object.keys(snapshot.slotEnvelopes || {}).length,
+    adapterCalls: adapterCalls,
+    milliseconds: milliseconds(started)
+  };
+}
+
 function main() {
   var testMode = process.argv.indexOf('--test') !== -1;
   var namespace = loadNamespace();
@@ -109,6 +177,8 @@ function main() {
   var output = {
     nodeVersion: process.version,
     sameEvent: benchmarkSameEvent(namespace, config, testMode ? 20 : 2000),
+    adaptiveSamePart: benchmarkAdaptiveSamePart(namespace, config, testMode ? 20 : 2000),
+    envelopes: benchmarkEnvelopes(namespace, config, testMode ? 10 : 1000),
     uniqueEvents: uniqueCounts.map(function (count) {
       return benchmarkUniqueEvents(namespace, config, count);
     }),
