@@ -567,6 +567,57 @@ test('lifecycle failed reload reasserts the physical texture tuple and retries a
   assert.equal(variables['xthb-slot-01-frequency'], 70);
 });
 
+test('failed reload resync keeps ordinary pending metadata for later expiry ramps', function () {
+  var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
+  var loaded = loadRuntime({ now: 1000, variables: variables });
+  var nextConfig = fixtureConfig();
+  var failPlaySlotOne = false;
+  var failRemovedSlotTwo = false;
+  var attemptedGeneration;
+  var resyncedGeneration;
+  var originalCallAction = loaded.context.callAction;
+  loaded.context.callAction = function (action) {
+    originalCallAction(action);
+    if (failPlaySlotOne && action.job === 'xthb-output-01') {
+      failPlaySlotOne = false;
+      throw new Error('ordinary play failed');
+    }
+    if (failRemovedSlotTwo && action.job === 'xthb-output-02') {
+      failRemovedSlotTwo = false;
+      throw new Error('removed slot zero failed');
+    }
+  };
+  loaded.context.xtoysBridgeInit();
+  loaded.context.xtoysBridgeHandle(payload('set_baseline', {
+    sequence: 1,
+    targets: [{ part: 'clitoris', intensity: 40, rampDownMs: 400 }]
+  }));
+  failPlaySlotOne = true;
+  assert.equal(loaded.context.xtoysBridgeHandle(payload('play', {
+    eventId: 'ordinary-pending-before-reload', sequence: 1,
+    targets: [{
+      part: 'clitoris', intensity: 80, durationMs: 100,
+      rampUpMs: 200, rampDownMs: 400
+    }]
+  })), 1);
+  attemptedGeneration = variables['xthb-slot-01-generation'];
+
+  nextConfig.slots[1].enabled = false;
+  variables['xthb-config-json'] = JSON.stringify(nextConfig);
+  loaded.setNow(1050);
+  failRemovedSlotTwo = true;
+  assert.equal(loaded.context.xtoysBridgeReloadConfig(), 0);
+  resyncedGeneration = variables['xthb-slot-01-generation'];
+  assert.ok(resyncedGeneration > attemptedGeneration);
+
+  loaded.actions.length = 0;
+  loaded.setNow(1100);
+  assert.equal(loaded.context.xtoysBridgeTick(), 2);
+  assert.equal(variables['xthb-slot-01-value'], 20);
+  assert.equal(variables['xthb-slot-01-ramp-seconds'], 0.4);
+  assert.ok(variables['xthb-slot-01-generation'] > resyncedGeneration);
+});
+
 test('failed reload completing a prior partial stop becomes fully stopped after resync', function () {
   var variables = { 'xthb-config-json': JSON.stringify(fixtureConfig()) };
   var loaded = loadRuntime({ variables: variables });

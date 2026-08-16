@@ -117,6 +117,7 @@
           detail: error && error.message !== undefined ? String(error.message) : String(error)
         };
         pendingDispatches[slot.id] = {
+          slot: copy(slot),
           tuple: copy(tuple),
           transition: copy(transition)
         };
@@ -573,8 +574,7 @@
         if (slot.enabled && resyncPendingDispatches[slot.id] === undefined) {
           pending = pendingDispatches[slot.id];
           if (pending !== undefined) {
-            physical = copy(pending.tuple);
-            physical.id = slot.id;
+            physical = copy(pending.slot);
             transition = copy(pending.transition);
           } else if (lastSlots[slot.id] !== undefined) {
             physical = copy(lastSlots[slot.id]);
