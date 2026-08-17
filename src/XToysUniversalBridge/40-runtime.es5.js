@@ -3,6 +3,80 @@
     return ns.copyObject(value);
   }
 
+  function copyTransition(transition) {
+    return { rampSeconds: transition.rampSeconds };
+  }
+
+  function copyTuple(tuple) {
+    return {
+      value: tuple.value,
+      frequency: tuple.frequency,
+      direction: tuple.direction,
+      generation: tuple.generation,
+      rampSeconds: tuple.rampSeconds
+    };
+  }
+
+  function copyToken(token) {
+    return {
+      slotId: token.slotId,
+      ownerKey: token.ownerKey,
+      ownerGeneration: token.ownerGeneration,
+      phase: token.phase
+    };
+  }
+
+  function copyFailure(failure) {
+    return {
+      slotId: failure.slotId,
+      code: failure.code,
+      detail: failure.detail
+    };
+  }
+
+  function copyFailures(failures) {
+    var copied = [];
+    var index;
+    for (index = 0; index < failures.length; index += 1) {
+      copied.push(copyFailure(failures[index]));
+    }
+    return copied;
+  }
+
+  function copySlot(slot) {
+    /* Winner metadata is a fixed scalar projection owned by this dispatch pass. */
+    return {
+      id: slot.id,
+      enabled: slot.enabled,
+      type: slot.type,
+      value: slot.value,
+      frequency: slot.frequency,
+      direction: slot.direction,
+      rampUpMs: slot.rampUpMs,
+      rampDownMs: slot.rampDownMs,
+      pulseOnMs: slot.pulseOnMs,
+      pulseOffMs: slot.pulseOffMs,
+      baselineWinner: slot.baselineWinner,
+      foregroundWinner: slot.foregroundWinner,
+      transientWinner: slot.transientWinner,
+      baselineValue: slot.baselineValue,
+      baselineFrequency: slot.baselineFrequency,
+      baselineDirection: slot.baselineDirection,
+      generation: slot.generation
+    };
+  }
+
+  function actuatorSlot(slot) {
+    /* The adapter receives only the primitive actuator tuple it owns. */
+    return {
+      id: slot.id,
+      value: slot.value,
+      frequency: slot.frequency,
+      direction: slot.direction,
+      generation: slot.generation
+    };
+  }
+
   function normalizedDirection(value) {
     return value === undefined ? null : value;
   }
@@ -94,11 +168,11 @@
 
     function apply(slot, transition, force) {
       var tuple = coreTuple(slot);
-      var physicalSlot = copy(slot);
+      var physicalSlot = actuatorSlot(slot);
       var failure;
       tuple.rampSeconds = transition.rampSeconds;
       if (!force && pendingDispatches[slot.id] === undefined && sameTuple(lastTuples[slot.id], tuple)) {
-        lastSlots[slot.id] = copy(slot);
+        lastSlots[slot.id] = copySlot(slot);
         return { changed: false, failure: null };
       }
       if (generationFloors[slot.id] === undefined) {
@@ -109,7 +183,7 @@
       }
       tuple.generation = physicalSlot.generation;
       try {
-        outputAdapter.applySlot(physicalSlot, copy(transition));
+        outputAdapter.applySlot(physicalSlot, copyTransition(transition));
       } catch (error) {
         failure = {
           slotId: slot.id,
@@ -117,14 +191,14 @@
           detail: error && error.message !== undefined ? String(error.message) : String(error)
         };
         pendingDispatches[slot.id] = {
-          slot: copy(slot),
-          tuple: copy(tuple),
-          transition: copy(transition)
+          slot: copySlot(slot),
+          tuple: copyTuple(tuple),
+          transition: copyTransition(transition)
         };
         return { changed: false, failure: failure };
       }
-      lastTuples[slot.id] = copy(tuple);
-      lastSlots[slot.id] = copy(slot);
+      lastTuples[slot.id] = copyTuple(tuple);
+      lastSlots[slot.id] = copySlot(slot);
       delete pendingDispatches[slot.id];
       return { changed: true, failure: null };
     }
@@ -132,7 +206,7 @@
     function transitionFor(slot, expiredParts) {
       var pending = pendingDispatches[slot.id];
       if (pending !== undefined && sameActuator(pending.tuple, coreTuple(slot))) {
-        return copy(pending.transition);
+        return copyTransition(pending.transition);
       }
       return {
         rampSeconds: rampSeconds(lastSlots[slot.id], slot, lastTuples[slot.id], expiredParts)
@@ -146,8 +220,41 @@
       ]);
     }
 
+    function resolvedWinnerKey(slot) {
+      var kind = slot.transientWinner === null ? 'baseline' : 'transient';
+      var winner = slot.transientWinner === null
+        ? slot.baselineWinner : slot.transientWinner;
+      if (winner === null) {
+        return null;
+      }
+      return ns.compositeKey([
+        kind, winner.source || '', winner.eventId || '', winner.target.part,
+        winner.sequence === undefined ? '' : winner.sequence,
+        winner.generation === undefined ? '' : winner.generation
+      ]);
+    }
+
+    function reversesDirection(previous, slot) {
+      return previous !== undefined && previous.direction !== null &&
+        slot.direction !== null && previous.direction !== slot.direction;
+    }
+
+    function restoresOlderForeground(previous, winner) {
+      var previousWinner = previous === undefined
+        ? null : previous.foregroundWinner;
+      return previousWinner !== null && !sameWinner(previousWinner, winner) &&
+        winner.generation < previousWinner.generation;
+    }
+
+    function restoredRiseMs(winner, plan, atMs) {
+      var remaining = Math.max(0, winner.expiresAt - atMs);
+      return Math.min(plan.riseMs,
+        Math.max(0, remaining - ns.SCHEDULER_INTERVAL_MS));
+    }
+
     function prepareHapticSlot(slot, atMs) {
       var key = foregroundKey(slot);
+      var releaseKey;
       var envelope = slotEnvelopes[slot.id];
       var pending = hapticPendingDispatches[slot.id];
       var previous = lastSlots[slot.id];
@@ -157,57 +264,134 @@
       var targetPhase;
       var transition;
       var reversing;
+      var restored;
+
       if (key === null) {
-        delete slotEnvelopes[slot.id];
-        delete hapticPendingDispatches[slot.id];
-        return { slot: slot, transition: null, token: null };
+        releaseKey = resolvedWinnerKey(slot);
+        if (envelope !== undefined && envelope.releaseOnly &&
+            envelope.ownerKey === releaseKey) {
+          key = releaseKey;
+        } else if (releaseKey !== null && previous !== undefined &&
+            previous.foregroundWinner !== null &&
+            reversesDirection(previous, slot)) {
+          key = releaseKey;
+        } else {
+          delete slotEnvelopes[slot.id];
+          delete hapticPendingDispatches[slot.id];
+          return { slot: slot, transition: null, token: null };
+        }
       }
+
       if (envelope === undefined || envelope.ownerKey !== key) {
         delete hapticPendingDispatches[slot.id];
+        if (winner === null) {
+          envelope = {
+            ownerKey: key,
+            ownerGeneration: slot.generation,
+            phase: 'fall',
+            riseAt: null,
+            floorApplied: false,
+            dropPercent: 100,
+            fallMs: previous.rampDownMs,
+            riseMs: slot.rampUpMs,
+            textureStartedAt: null,
+            pendingTexturePhase: null,
+            pendingTextureSlot: null,
+            pendingTextureTransition: null,
+            releaseOnly: true,
+            restoredOwner: false,
+            zeroBeforeReverse: true,
+            fallDirection: previous.direction
+          };
+          slotEnvelopes[slot.id] = envelope;
+          physical = copySlot(slot);
+          physical.value = 0;
+          physical.frequency = slot.baselineFrequency;
+          physical.direction = envelope.fallDirection;
+          return {
+            slot: physical,
+            transition: { rampSeconds: envelope.fallMs / 1000 },
+            token: {
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'fall'
+            }
+          };
+        }
+
         plan = ns.envelopePlan(winner.target, winner.cadence);
-        reversing = previous !== undefined && previous.direction !== null &&
-          slot.direction !== null && previous.direction !== slot.direction;
+        reversing = reversesDirection(previous, slot);
+        restored = restoresOlderForeground(previous, winner);
         envelope = {
-          ownerKey: key, ownerGeneration: winner.generation,
-          phase: 'rise', riseAt: atMs, floorApplied: true,
-          dropPercent: plan.dropPercent, fallMs: plan.fallMs, riseMs: plan.riseMs,
+          ownerKey: key,
+          ownerGeneration: winner.generation,
+          phase: 'rise',
+          riseAt: atMs,
+          floorApplied: true,
+          dropPercent: plan.dropPercent,
+          fallMs: plan.fallMs,
+          riseMs: restored ? restoredRiseMs(winner, plan, atMs) : plan.riseMs,
           textureStartedAt: winner.cadence.mode === 'texture'
             ? winner.cadence.textureStartedAt : null,
-          pendingTexturePhase: null, pendingTextureSlot: null,
-          pendingTextureTransition: null
+          pendingTexturePhase: null,
+          pendingTextureSlot: null,
+          pendingTextureTransition: null,
+          releaseOnly: false,
+          restoredOwner: restored,
+          zeroBeforeReverse: reversing,
+          fallDirection: reversing ? previous.direction : null
         };
         slotEnvelopes[slot.id] = envelope;
         if (reversing) {
-          physical = copy(slot);
+          physical = copySlot(slot);
           physical.value = 0;
           physical.frequency = slot.baselineFrequency;
-          physical.direction = previous.direction;
+          physical.direction = envelope.fallDirection;
           envelope.phase = 'fall';
           envelope.riseAt = null;
           envelope.floorApplied = false;
           return {
             slot: physical,
-            transition: { rampSeconds: plan.fallMs / 1000 },
+            transition: { rampSeconds: envelope.fallMs / 1000 },
             token: {
-              slotId: slot.id, ownerKey: key,
-              ownerGeneration: winner.generation, phase: 'fall'
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'fall'
+            }
+          };
+        }
+        if (restored) {
+          envelope.phase = 'target';
+          return {
+            slot: slot,
+            transition: { rampSeconds: envelope.riseMs / 1000 },
+            token: {
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'target'
             }
           };
         }
         if (winner.cadence.mode === 'texture') {
           envelope.phase = 'texture';
         } else if (previous === undefined ||
-            (previous.transientWinner === null && previous.value === slot.baselineValue)) {
+            (previous.transientWinner === null &&
+              previous.value === slot.baselineValue)) {
           return {
             slot: slot,
-            transition: { rampSeconds: plan.riseMs / 1000 },
+            transition: { rampSeconds: envelope.riseMs / 1000 },
             token: {
-              slotId: slot.id, ownerKey: key,
-              ownerGeneration: winner.generation, phase: 'target'
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'target'
             }
           };
         } else {
-          physical = copy(slot);
+          physical = copySlot(slot);
           physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
             winner.target.baselineBlend, plan.dropPercent);
           physical.frequency = slot.baselineFrequency;
@@ -216,34 +400,39 @@
           envelope.floorApplied = false;
           return {
             slot: physical,
-            transition: { rampSeconds: plan.fallMs / 1000 },
+            transition: { rampSeconds: envelope.fallMs / 1000 },
             token: {
-              slotId: slot.id, ownerKey: key,
-              ownerGeneration: winner.generation, phase: 'fall'
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'fall'
             }
           };
         }
       }
-      if (winner.cadence.mode === 'texture' &&
+
+      if (winner !== null && winner.cadence.mode === 'texture' &&
           !(envelope.phase === 'fall' &&
             (!envelope.floorApplied || atMs < envelope.riseAt))) {
         envelope.textureStartedAt = winner.cadence.textureStartedAt;
         if (envelope.pendingTextureSlot !== null) {
           return {
-            slot: copy(envelope.pendingTextureSlot),
-            transition: copy(envelope.pendingTextureTransition),
+            slot: copySlot(envelope.pendingTextureSlot),
+            transition: copyTransition(envelope.pendingTextureTransition),
             token: {
-              slotId: slot.id, ownerKey: key,
-              ownerGeneration: winner.generation,
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
               phase: envelope.pendingTexturePhase
             }
           };
         }
         targetPhase = ns.textureTargetPhase(winner.cadence, atMs);
-        physical = copy(slot);
+        physical = copySlot(slot);
         if (!targetPhase) {
           physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
-            winner.target.baselineBlend, winner.target.retrigger.minDropPercent);
+            winner.target.baselineBlend,
+            winner.target.retrigger.minDropPercent);
           physical.frequency = slot.baselineFrequency;
         }
         transition = {
@@ -252,47 +441,60 @@
             : winner.target.retrigger.minRampDownMs) / 1000
         };
         envelope.pendingTexturePhase = targetPhase ? 'target' : 'floor';
-        envelope.pendingTextureSlot = copy(physical);
-        envelope.pendingTextureTransition = copy(transition);
+        envelope.pendingTextureSlot = copySlot(physical);
+        envelope.pendingTextureTransition = copyTransition(transition);
         return {
           slot: physical,
           transition: transition,
           token: {
-            slotId: slot.id, ownerKey: key,
-            ownerGeneration: winner.generation,
+            slotId: slot.id,
+            ownerKey: key,
+            ownerGeneration: envelope.ownerGeneration,
             phase: envelope.pendingTexturePhase
           }
         };
       }
+
       if (pending !== undefined && pending.ownerKey === key &&
-          pending.ownerGeneration === winner.generation) {
+          pending.ownerGeneration === envelope.ownerGeneration) {
         return {
-          slot: copy(pending.slot),
-          transition: copy(pending.transition),
-          token: copy(pending.token)
+          slot: copySlot(pending.slot),
+          transition: copyTransition(pending.transition),
+          token: copyToken(pending.token)
         };
       }
-      if (envelope.phase === 'fall' && envelope.floorApplied && atMs >= envelope.riseAt) {
+      if (envelope.phase === 'fall' && envelope.floorApplied &&
+          atMs >= envelope.riseAt) {
         return {
           slot: slot,
           transition: { rampSeconds: envelope.riseMs / 1000 },
           token: {
-            slotId: slot.id, ownerKey: key,
-            ownerGeneration: winner.generation, phase: 'target'
+            slotId: slot.id,
+            ownerKey: key,
+            ownerGeneration: envelope.ownerGeneration,
+            phase: 'target'
           }
         };
       }
       if (envelope.phase === 'fall') {
-        physical = copy(slot);
-        physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
-          winner.target.baselineBlend, envelope.dropPercent);
-        physical.frequency = slot.baselineFrequency;
+        physical = copySlot(slot);
+        if (envelope.zeroBeforeReverse) {
+          physical.value = 0;
+          physical.frequency = slot.baselineFrequency;
+          physical.direction = envelope.fallDirection;
+        } else {
+          physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+            winner.target.baselineBlend, envelope.dropPercent);
+          physical.frequency = slot.baselineFrequency;
+        }
         return {
           slot: physical,
           transition: { rampSeconds: envelope.fallMs / 1000 },
           token: {
-            slotId: slot.id, ownerKey: key,
-            ownerGeneration: winner.generation, phase: 'fall'
+            slotId: slot.id,
+            ownerKey: key,
+            ownerGeneration: envelope.ownerGeneration,
+            phase: 'fall'
           }
         };
       }
@@ -300,8 +502,10 @@
         slot: slot,
         transition: { rampSeconds: envelope.riseMs / 1000 },
         token: {
-          slotId: slot.id, ownerKey: key,
-          ownerGeneration: winner.generation, phase: 'target'
+          slotId: slot.id,
+          ownerKey: key,
+          ownerGeneration: envelope.ownerGeneration,
+          phase: 'target'
         }
       };
     }
@@ -337,9 +541,9 @@
         ownerKey: token.ownerKey,
         ownerGeneration: token.ownerGeneration,
         phase: token.phase,
-        slot: copy(prepared.slot),
-        transition: copy(prepared.transition),
-        token: copy(token)
+        slot: copySlot(prepared.slot),
+        transition: copyTransition(prepared.transition),
+        token: copyToken(token)
       };
     }
 
@@ -350,12 +554,12 @@
     function reportFailures(failures) {
       var index;
       var logEntry;
-      recentFailures = copy(failures);
+      recentFailures = copyFailures(failures);
       if (typeof outputAdapter.log !== 'function') {
         return;
       }
       for (index = 0; index < failures.length; index += 1) {
-        logEntry = copy(failures[index]);
+        logEntry = copyFailure(failures[index]);
         logEntry.type = 'dispatch_error';
         try {
           outputAdapter.log(logEntry);
@@ -379,8 +583,8 @@
         if (slot.enabled) {
           if (resyncPendingDispatches[slot.id] !== undefined) {
             prepared = {
-              slot: copy(resyncPendingDispatches[slot.id].slot),
-              transition: copy(resyncPendingDispatches[slot.id].transition),
+              slot: copySlot(resyncPendingDispatches[slot.id].slot),
+              transition: copyTransition(resyncPendingDispatches[slot.id].transition),
               token: null,
               resync: true
             };
@@ -444,7 +648,7 @@
         return {
           ok: true,
           changedSlots: stopped,
-          dispatchFailures: copy(recentFailures)
+          dispatchFailures: copyFailures(recentFailures)
         };
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
@@ -470,7 +674,7 @@
         ok: true,
         changed: applied.changed || expired.changed,
         changedSlots: dispatched.changedSlots,
-        dispatchFailures: copy(dispatched.failures)
+        dispatchFailures: copyFailures(dispatched.failures)
       };
     };
 
@@ -574,16 +778,16 @@
         if (slot.enabled && resyncPendingDispatches[slot.id] === undefined) {
           pending = pendingDispatches[slot.id];
           if (pending !== undefined) {
-            physical = copy(pending.slot);
-            transition = copy(pending.transition);
+            physical = copySlot(pending.slot);
+            transition = copyTransition(pending.transition);
           } else if (lastSlots[slot.id] !== undefined) {
-            physical = copy(lastSlots[slot.id]);
+            physical = copySlot(lastSlots[slot.id]);
             transition = {
               rampSeconds: lastTuples[slot.id] === undefined
                 ? 0 : lastTuples[slot.id].rampSeconds
             };
           } else {
-            physical = copy(slot);
+            physical = copySlot(slot);
             transition = { rampSeconds: 0 };
           }
           resyncPendingDispatches[slot.id] = {

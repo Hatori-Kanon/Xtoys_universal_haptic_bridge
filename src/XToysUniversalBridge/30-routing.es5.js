@@ -126,11 +126,86 @@
     return elapsed % period < target.pulseOnMs;
   }
 
+  function retriggerMetadata(retrigger) {
+    if (retrigger === null) {
+      return null;
+    }
+    return {
+      mode: retrigger.mode,
+      minDropPercent: retrigger.minDropPercent,
+      maxDropPercent: retrigger.maxDropPercent,
+      minRampUpMs: retrigger.minRampUpMs,
+      minRampDownMs: retrigger.minRampDownMs,
+      textureThresholdMs: retrigger.textureThresholdMs,
+      quietResetMs: retrigger.quietResetMs
+    };
+  }
+
+  function targetMetadata(target) {
+    return {
+      part: target.part,
+      effect: target.effect,
+      intensity: target.intensity,
+      hasIntensity: target.hasIntensity,
+      frequency: target.frequency,
+      hasFrequency: target.hasFrequency,
+      rotateSpeed: target.rotateSpeed,
+      hasRotateSpeed: target.hasRotateSpeed,
+      rotateDirection: target.rotateDirection,
+      durationMs: target.durationMs,
+      rampUpMs: target.rampUpMs,
+      rampDownMs: target.rampDownMs,
+      pulseOnMs: target.pulseOnMs,
+      pulseOffMs: target.pulseOffMs,
+      priority: target.priority,
+      blend: target.blend,
+      baselineBlend: target.baselineBlend,
+      retrigger: retriggerMetadata(target.retrigger)
+    };
+  }
+
+  function cadenceMetadata(cadence) {
+    if (cadence === null) {
+      return null;
+    }
+    return {
+      lastAttackAt: cadence.lastAttackAt,
+      averageInterval: cadence.averageInterval,
+      mode: cadence.mode,
+      lastGeneration: cadence.lastGeneration,
+      textureStartedAt: cadence.textureStartedAt,
+      quietResetMs: cadence.quietResetMs
+    };
+  }
+
   function winnerMetadata(winner) {
+    var entry;
+    var metadata;
     if (winner === null) {
       return null;
     }
-    return ns.copyObject(winner.entry);
+    entry = winner.entry;
+    metadata = {
+      source: entry.source,
+      sequence: entry.sequence,
+      target: targetMetadata(entry.target)
+    };
+    if (hasOwn.call(entry, 'eventId')) {
+      metadata.eventId = entry.eventId;
+    }
+    if (hasOwn.call(entry, 'acceptedAt')) {
+      metadata.acceptedAt = entry.acceptedAt;
+    }
+    if (hasOwn.call(entry, 'expiresAt')) {
+      metadata.expiresAt = entry.expiresAt;
+    }
+    if (hasOwn.call(entry, 'generation')) {
+      metadata.generation = entry.generation;
+    }
+    if (hasOwn.call(entry, 'cadence')) {
+      metadata.cadence = cadenceMetadata(entry.cadence);
+    }
+    return metadata;
   }
 
   function outputForSlot(slot, snapshot, nowMs) {
@@ -208,7 +283,8 @@
     transientWinner = foregroundWinner === null ? ordinaryTransientWinner : foregroundWinner;
     if (baselineWinner !== null) {
       baselineValue = baselineWinner.effectiveValue;
-      baselineFrequency = baselineWinner.entry.target.frequency;
+      baselineFrequency = slot.frequencyEnabled
+        ? baselineWinner.entry.target.frequency : 0;
       if (slot.type === 'rotation') {
         baselineDirection = baselineWinner.entry.target.rotateDirection;
       }

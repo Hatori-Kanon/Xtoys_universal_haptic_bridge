@@ -616,6 +616,39 @@ test('rejects a stale baseline sequence when the source is __proto__', function 
   assert.equal(snapshot.baseline[eventKey('__proto__', 'vagina')].target.part, 'vagina');
 });
 
+test('adaptive __proto__ identities own and clean event cadence and part maps', function () {
+  var engine = buildAndCreateEngine();
+  var adaptiveEventKey = eventKey('__proto__', '__proto__');
+  var adaptivePartKey = partKey('__proto__', 'clitoris');
+  var snapshot;
+
+  engine.applyMessage(message('play', {
+    source: '__proto__', eventId: '__proto__', sequence: 1,
+    targets: [adaptiveTarget('clitoris', 100)]
+  }), 0, false);
+  snapshot = engine.hapticSnapshot();
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    engine.snapshot().events, adaptiveEventKey), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.cadenceRecords, adaptivePartKey), true);
+  assert.equal(snapshot.partOwners[adaptivePartKey].eventKeys[adaptiveEventKey], 1);
+
+  engine.applyMessage(message('stop', {
+    source: '__proto__', eventId: '__proto__'
+  }), 50, false);
+  snapshot = engine.hapticSnapshot();
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    engine.snapshot().events, adaptiveEventKey), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.partOwners, adaptivePartKey), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    snapshot.cadenceRecords, adaptivePartKey), true);
+
+  engine.expire(600, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    engine.hapticSnapshot().cadenceRecords, adaptivePartKey), false);
+});
+
 test('stop all clears both logical maps and advances the global generation', function () {
   var engine = buildAndCreateEngine();
   var result;

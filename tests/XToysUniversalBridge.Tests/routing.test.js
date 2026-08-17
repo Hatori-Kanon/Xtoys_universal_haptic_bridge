@@ -354,7 +354,7 @@ test('resolved slot exposes the winning baseline actuator tuple', function () {
   assert.equal(slot.baselineDirection, null);
 });
 
-test('baseline metadata retains its frequency outside frequency-enabled slots and direction for rotation slots', function () {
+test('frequency-disabled slots zero baseline frequency metadata and retain rotation direction', function () {
   var state = snapshot({
     intensity: baseline('clitoris', { intensity: 60, frequency: 45 }),
     rotation: baseline('vagina', { rotateSpeed: 30, rotateDirection: 'clockwise' })
@@ -362,7 +362,7 @@ test('baseline metadata retains its frequency outside frequency-enabled slots an
   var result = slotsFor(runtime, state, validatedConfig());
 
   assert.equal(result[1].baselineValue, 15);
-  assert.equal(result[1].baselineFrequency, 45);
+  assert.equal(result[1].baselineFrequency, 0);
   assert.equal(result[1].baselineDirection, null);
   assert.equal(result[2].baselineValue, 15);
   assert.equal(result[2].baselineFrequency, 0);

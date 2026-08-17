@@ -90,3 +90,29 @@ test('texture phase has a 200ms lower-bound cycle and deterministic halves', fun
   assert.equal(runtime.textureTargetPhase(cadence, 1100), false);
   assert.equal(runtime.textureTargetPhase(cadence, 1200), true);
 });
+
+test('cadence and envelope helpers honor exact deferred boundaries', function () {
+  var runtime = buildRuntime();
+  var profile = target();
+  var quietPrevious = runtime.nextCadence(null, profile, 1000, 1);
+  var thresholdPrevious = {
+    lastAttackAt: 1000,
+    averageInterval: null,
+    mode: 'single',
+    lastGeneration: 1,
+    textureStartedAt: null,
+    quietResetMs: 600
+  };
+  var quiet = runtime.nextCadence(quietPrevious, profile, 1600, 2);
+  var threshold = runtime.nextCadence(thresholdPrevious, profile, 1150, 2);
+
+  assert.equal(quiet.mode, 'single');
+  assert.equal(quiet.averageInterval, null);
+  assert.equal(threshold.mode, 'adaptive');
+  assert.equal(threshold.averageInterval, 150);
+  assert.equal(runtime.hapticFloor(0, 100, 'replace', 100), 0);
+  assert.equal(runtime.textureTargetPhase({
+    averageInterval: 80,
+    textureStartedAt: 1000
+  }, 999), true);
+});

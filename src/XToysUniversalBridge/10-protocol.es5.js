@@ -239,6 +239,8 @@
         result.minRampUpMs < 0 || result.minRampUpMs > target.rampUpMs ||
         result.minRampDownMs < 0 || result.minRampDownMs > target.rampDownMs ||
         result.textureThresholdMs < ns.SCHEDULER_INTERVAL_MS ||
+        result.textureThresholdMs > ns.MAX_TIME_MS ||
+        result.quietResetMs > ns.MAX_TIME_MS ||
         result.quietResetMs <= result.textureThresholdMs) {
       return fail('invalid_retrigger', 'Retrigger ranges are inconsistent.');
     }

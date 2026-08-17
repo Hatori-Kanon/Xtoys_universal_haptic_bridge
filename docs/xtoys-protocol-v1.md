@@ -70,11 +70,25 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 }
 ```
 
+七个字段均必填，数值必须有限，并满足下列闭区间/相对约束；超出范围返回 `invalid_retrigger`：
+
+| 字段 | 约束 |
+| --- | --- |
+| `mode` | 必须严格等于 `adaptive`。 |
+| `minDropPercent` | `0`–`100`。 |
+| `maxDropPercent` | `minDropPercent`–`100`。 |
+| `minRampUpMs` | `0`–目标的 `rampUpMs`，且不超过 `600000` ms。 |
+| `minRampDownMs` | `0`–目标的 `rampDownMs`，且不超过 `600000` ms。 |
+| `textureThresholdMs` | `100`–`600000` ms。 |
+| `quietResetMs` | 严格大于 `textureThresholdMs`，且不超过 `600000` ms。 |
+
+另外必须满足 `minRampDownMs + 100 + minRampUpMs <= durationMs`；不满足时返回 `invalid_retrigger_timing`。因此默认最小值 `20 + 100 + 30` 的最短合法目标持续时间为 `150` ms。`durationMs`、目标 ramp 与这两个 cadence 阈值的协议最大值均为 `600000` ms；运行时不会默默保留超过此上界的 retrigger cadence。
+
 连续命中同一 `source + part` 时，运行时在 `quietResetMs` 内以 `0.75 * 旧平均间隔 + 0.25 * 新间隔` 更新 EMA；静默达到该值后清除 cadence。平均间隔低于 `textureThresholdMs` 进入 texture，否则进入 adaptive。adaptive 会从当前胜出基线向下落到按间隔插值的 floor，再按插值 ramp 回到攻击值；所有 fall/rise 时间至少分别为 `minRampDownMs`/`minRampUpMs`，并在剩余持续时间不足时按比例压缩。`textureThresholdMs` 至少为 100 ms，调度器采样周期为 100 ms。
 
-texture 使用不低于 200 ms 的完整周期（按目标/基线两半交替）：floor 半段恢复基线频率，target 半段使用攻击频率；到期后仍由下一次 100 ms tick 清理。相同来源、相同部位的新事件会取消该部位的旧事件；不同部位即使共享一个物理槽也不会互相删除，前者到期或停止后后者会恢复为仍活跃的胜者。相同输出值本身不会触发重置，必须提供 `retrigger`。
+texture 使用不低于 200 ms 的完整周期（按目标/基线两半交替）：floor 半段恢复基线频率，target 半段使用攻击频率；到期后仍由下一次 100 ms tick 清理。`frequencyEnabled: false` 的槽在普通输出、adaptive fall/rise、texture 两相和旋转反转期间都强制输出频率 `0`，不会从 winner 或基线 metadata 泄漏频率。相同来源、相同部位的新事件会取消该部位的旧事件；不同部位即使共享一个物理槽也不会互相删除，前者到期或停止后后者会恢复为仍活跃的胜者。这个恢复不是一次新命中：不会重新执行完整 fall；rise 会按旧事件剩余寿命收紧，少于一个调度周期时立即恢复当前目标。相同输出值本身不会触发重置，必须提供 `retrigger`。
 
-旋转方向更新始终先以零值下发，再应用相反方向；适配器只使用显式 `rotateDirection`，不会推断或自动反转。
+旋转方向更新始终先以当前方向下发零速度，并且只有该零速度 tuple 被适配器确认后，后续调度 pass 才会应用相反方向；adaptive foreground 停止或到期、恢复相反方向的普通 winner/基线时也遵守同一规则。适配器只使用显式 `rotateDirection`，不会推断或自动反转。
 
 ### 错误代码
 

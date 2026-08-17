@@ -71,6 +71,17 @@ function adaptiveBenchmarkConfig(config) {
   return benchmarkConfig;
 }
 
+function adaptiveSixteenSlotConfig(config) {
+  var benchmarkConfig = JSON.parse(JSON.stringify(config));
+  benchmarkConfig.slots.forEach(function (slot) {
+    slot.enabled = true;
+    slot.type = 'intensity';
+    slot.frequencyEnabled = false;
+    slot.routes = { clitoris: 1 };
+  });
+  return benchmarkConfig;
+}
+
 function milliseconds(started) {
   return Number(process.hrtime.bigint() - started) / 1000000;
 }
@@ -231,17 +242,62 @@ function benchmarkEnvelopes(namespace, config, updates) {
   };
 }
 
+function benchmarkAdaptiveTickCopies(namespace, config) {
+  var adapterCalls = 0;
+  var now = 0;
+  var runtime = createRuntime(namespace, config, function () {
+    adapterCalls += 1;
+  }, function () { return now; });
+  var originalCopy = namespace.copyObject;
+  var deepCopies = 0;
+  var fullWinnerCopies = 0;
+  var fullSlotCopies = 0;
+  var callsBefore;
+
+  runtime.handle(adaptivePayload('play', 'adaptive-tick-16', 1));
+  now = 50;
+  runtime.handle(adaptivePayload('update', 'adaptive-tick-16', 2));
+  namespace.copyObject = function (value) {
+    deepCopies += 1;
+    if (value !== null && typeof value === 'object') {
+      if (value.target !== undefined && value.generation !== undefined) {
+        fullWinnerCopies += 1;
+      }
+      if (value.foregroundWinner !== undefined && value.transientWinner !== undefined) {
+        fullSlotCopies += 1;
+      }
+    }
+    return originalCopy(value);
+  };
+  callsBefore = adapterCalls;
+  try {
+    now = 150;
+    runtime.tick();
+  } finally {
+    namespace.copyObject = originalCopy;
+  }
+  return {
+    enabledSlots: 16,
+    adapterCalls: adapterCalls - callsBefore,
+    deepCopies: deepCopies,
+    fullWinnerCopies: fullWinnerCopies,
+    fullSlotCopies: fullSlotCopies
+  };
+}
+
 function main() {
   var testMode = process.argv.indexOf('--test') !== -1;
   var namespace = loadNamespace();
   var config = loadConfig();
   var adaptiveConfig = adaptiveBenchmarkConfig(config);
+  var sixteenSlotConfig = adaptiveSixteenSlotConfig(config);
   var uniqueCounts = [32, 64, 128, 129];
   var output = {
     nodeVersion: process.version,
     sameEvent: benchmarkSameEvent(namespace, config, testMode ? 20 : 2000),
     adaptiveSamePart: benchmarkAdaptiveSamePart(namespace, adaptiveConfig, testMode ? 20 : 2000),
     envelopes: benchmarkEnvelopes(namespace, adaptiveConfig, testMode ? 10 : 1000),
+    adaptiveTick16: benchmarkAdaptiveTickCopies(namespace, sixteenSlotConfig),
     uniqueEvents: uniqueCounts.map(function (count) {
       return benchmarkUniqueEvents(namespace, config, count);
     }),

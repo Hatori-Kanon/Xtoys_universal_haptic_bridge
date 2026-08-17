@@ -117,6 +117,27 @@ test('accepts adaptive retrigger values at inclusive boundaries', function () {
   });
 });
 
+test('accepts retrigger timing thresholds at the protocol maximum', function () {
+  var runtime = loadRuntime();
+  var payload = validPlay();
+  var result;
+
+  payload.targets[0].durationMs = 150;
+  payload.targets[0].rampUpMs = 30;
+  payload.targets[0].rampDownMs = 20;
+  payload.targets[0].retrigger = retrigger({
+    minRampUpMs: 30,
+    minRampDownMs: 20,
+    textureThresholdMs: 599999,
+    quietResetMs: 600000
+  });
+  result = parse(runtime, payload);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.message.targets[0].retrigger.textureThresholdMs, 599999);
+  assert.equal(result.message.targets[0].retrigger.quietResetMs, 600000);
+});
+
 test('rejects every adaptive retrigger value beyond its boundary', function () {
   var runtime = loadRuntime();
   var cases = [
@@ -128,7 +149,9 @@ test('rejects every adaptive retrigger value beyond its boundary', function () {
     { name: 'minimum ramp down below zero', values: { minRampDownMs: -1 }, code: 'invalid_retrigger' },
     { name: 'minimum ramp down above target ramp', values: { minRampDownMs: 21 }, code: 'invalid_retrigger' },
     { name: 'texture threshold below scheduler interval', values: { textureThresholdMs: 99 }, code: 'invalid_retrigger' },
+    { name: 'texture threshold above protocol time maximum', values: { textureThresholdMs: 600001, quietResetMs: 600002 }, code: 'invalid_retrigger' },
     { name: 'quiet reset equal to texture threshold', values: { textureThresholdMs: 100, quietResetMs: 100 }, code: 'invalid_retrigger' },
+    { name: 'quiet reset above protocol time maximum', values: { quietResetMs: 600001 }, code: 'invalid_retrigger' },
     { name: 'minimum envelope longer than duration', values: {}, durationMs: 149, code: 'invalid_retrigger_timing' }
   ];
 
