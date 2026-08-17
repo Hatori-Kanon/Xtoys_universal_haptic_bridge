@@ -167,6 +167,9 @@ test('committed release artifact matches sources and remains unchanged after reb
   names.forEach(function (name) {
     assert.equal(typeof context[name], 'function', name);
   });
+  assert.deepEqual(Object.keys(context).filter(function (name) {
+    return /^xtoysBridge/.test(name);
+  }).sort(), names.slice().sort());
 
   buildRuntime();
   childProcess.execFileSync(

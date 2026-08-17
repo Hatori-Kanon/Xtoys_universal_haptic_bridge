@@ -245,6 +245,9 @@ function benchmarkEnvelopes(namespace, config, updates) {
 function benchmarkAdaptiveTickCopies(namespace, config) {
   var adapterCalls = 0;
   var now = 0;
+  var enabledSlots = config.slots.filter(function (slot) {
+    return slot.enabled === true;
+  }).length;
   var runtime = createRuntime(namespace, config, function () {
     adapterCalls += 1;
   }, function () { return now; });
@@ -277,7 +280,7 @@ function benchmarkAdaptiveTickCopies(namespace, config) {
     namespace.copyObject = originalCopy;
   }
   return {
-    enabledSlots: 16,
+    enabledSlots: enabledSlots,
     adapterCalls: adapterCalls - callsBefore,
     deepCopies: deepCopies,
     fullWinnerCopies: fullWinnerCopies,

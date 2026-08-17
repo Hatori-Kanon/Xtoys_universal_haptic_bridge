@@ -2,14 +2,29 @@
 
 var assert = require('node:assert/strict');
 var childProcess = require('node:child_process');
+var fs = require('node:fs');
 var path = require('node:path');
 var test = require('node:test');
 
 var repositoryRoot = path.resolve(__dirname, '..', '..');
 var benchmarkScript = path.join(repositoryRoot, 'scripts', 'Benchmark-XToysRuntime.js');
+var configFile = path.join(repositoryRoot, 'tests', 'XToysUniversalBridge.Tests', 'fixtures', 'config.json');
 
 function finiteMilliseconds(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function expectedAdaptiveTickSlots() {
+  var config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  config.slots.forEach(function (slot) {
+    slot.enabled = true;
+    slot.type = 'intensity';
+    slot.frequencyEnabled = false;
+    slot.routes = { clitoris: 1 };
+  });
+  return config.slots.filter(function (slot) {
+    return slot.enabled === true;
+  }).length;
 }
 
 test('benchmark CLI reports deterministic workloads without timing thresholds', function () {
@@ -19,6 +34,7 @@ test('benchmark CLI reports deterministic workloads without timing thresholds', 
     { cwd: repositoryRoot, encoding: 'utf8' }
   );
   var result = JSON.parse(output);
+  var expectedTickSlots = expectedAdaptiveTickSlots();
 
   assert.equal(result.nodeVersion, process.version);
   assert.equal(result.sameEvent.updates, 20);
@@ -48,7 +64,8 @@ test('benchmark CLI reports deterministic workloads without timing thresholds', 
     result.envelopes.initialAdapterCalls + result.envelopes.retriggerAdapterCalls +
     result.envelopes.tickAdapterCalls);
   assert.equal(finiteMilliseconds(result.envelopes.milliseconds), true);
-  assert.equal(result.adaptiveTick16.enabledSlots, 16);
+  assert.equal(expectedTickSlots, 16);
+  assert.equal(result.adaptiveTick16.enabledSlots, expectedTickSlots);
   assert.equal(result.adaptiveTick16.adapterCalls >= 0, true);
   assert.equal(result.adaptiveTick16.adapterCalls <= result.adaptiveTick16.enabledSlots, true);
   assert.equal(result.adaptiveTick16.deepCopies, 0);
