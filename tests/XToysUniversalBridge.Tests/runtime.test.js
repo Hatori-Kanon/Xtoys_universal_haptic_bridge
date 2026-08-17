@@ -37,6 +37,28 @@ function target(part, values) {
   return result;
 }
 
+function retrigger() {
+  return {
+    mode: 'adaptive', minDropPercent: 25, maxDropPercent: 100,
+    minRampUpMs: 30, minRampDownMs: 20,
+    textureThresholdMs: 150, quietResetMs: 600
+  };
+}
+
+function adaptiveValues(values) {
+  var result = {
+    intensity: 60, durationMs: 500, rampUpMs: 180, rampDownMs: 80,
+    retrigger: retrigger()
+  };
+  var key;
+  for (key in values || {}) {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      result[key] = values[key];
+    }
+  }
+  return result;
+}
+
 function payload(command, values) {
   var data = values || {};
   var result = {
@@ -77,6 +99,13 @@ function createSubject(now, applySlot) {
   };
 }
 
+function playAdaptive(subject, eventId, part, intensity) {
+  return subject.runtime.handle(payload('play', {
+    eventId: eventId, sequence: 1,
+    targets: [target(part, adaptiveValues({ intensity: intensity }))]
+  }));
+}
+
 function callsFor(subject, slotId) {
   return subject.calls.filter(function (call) {
     return call.slot.id === slotId;
@@ -105,8 +134,7 @@ function slotVariables(loaded, slotId) {
     value: loaded.variables['xthb-slot-' + suffix + '-value'],
     frequency: loaded.variables['xthb-slot-' + suffix + '-frequency'],
     rampSeconds: loaded.variables['xthb-slot-' + suffix + '-ramp-seconds'],
-    directionCode: loaded.variables['xthb-slot-' + suffix + '-direction-code'],
-    generation: loaded.variables['xthb-slot-' + suffix + '-generation']
+    directionCode: loaded.variables['xthb-slot-' + suffix + '-direction-code']
   };
 }
 
@@ -155,7 +183,6 @@ test('play dispatches immediately through the adapter with a rising ramp', funct
   assert.equal(call.slot.value, 40);
   assert.equal(call.slot.frequency, 65);
   assert.equal(call.slot.direction, null);
-  assert.equal(call.slot.generation, 1);
   assert.deepEqual(copy(call.transition), { rampSeconds: 2.5 });
   assert.deepEqual(subject.loaded.actions, []);
   assert.deepEqual(subject.loaded.variables, {});
@@ -243,11 +270,9 @@ test('a higher-sequence generation survives the old expiry boundary', function (
   subject.runtime.tick();
 
   assert.equal(lastCall(subject, 1).slot.value, 45);
-  assert.equal(lastCall(subject, 1).slot.generation, 2);
   subject.loaded.setNow(250);
   subject.runtime.tick();
   assert.equal(lastCall(subject, 1).slot.value, 0);
-  assert.ok(lastCall(subject, 1).slot.generation > 2);
 });
 
 test('clearing a baseline without a transient dispatches zero with its falling ramp', function () {
@@ -438,7 +463,7 @@ test('invalid messages are atomic and never change or increase output', function
   assert.equal(lastCall(subject, 1).slot.value, 10);
 });
 
-test('physical tuple comparison ignores logical generation and retains latest expiry metadata', function () {
+test('tuple comparison ignores logical generation and retains latest expiry metadata', function () {
   var subject = createSubject(0);
   var firstCall;
   var callsAfterPlay;
@@ -470,7 +495,6 @@ test('physical tuple comparison ignores logical generation and retains latest ex
   }));
   assert.equal(callsFor(subject, 1).length, callsAfterPlay);
   assert.equal(subject.runtime.snapshot().generation, 2);
-  assert.equal(firstCall.slot.generation, 1);
   assert.equal(firstCall.transition.rampSeconds, 600);
 
   subject.loaded.setNow(200);
@@ -478,6 +502,541 @@ test('physical tuple comparison ignores logical generation and retains latest ex
   assert.equal(callsFor(subject, 1).length, callsAfterPlay + 1);
   assert.equal(lastCall(subject, 1).slot.value, 0);
   assert.equal(lastCall(subject, 1).transition.rampSeconds, 0.7);
+});
+
+test('first adaptive attack at baseline rises directly without a floor job', function () {
+  var subject = createSubject(1000);
+  var result = subject.runtime.handle(payload('play', {
+    eventId: 'first', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({ intensity: 60 }))]
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(callsFor(subject, 1).length, 1);
+  assert.equal(lastCall(subject, 1).slot.value, 30);
+  assert.equal(lastCall(subject, 1).transition.rampSeconds, 0.18);
+});
+
+test('same target performs one floor then one rise', function () {
+  var subject = createSubject(1000);
+  playAdaptive(subject, 'first', 'clitoris', 60);
+  subject.loaded.setNow(1400);
+  playAdaptive(subject, 'second', 'clitoris', 60);
+  assert.equal(lastCall(subject, 1).slot.value < 30, true);
+  var countAfterFloor = callsFor(subject, 1).length;
+  subject.loaded.setNow(1500);
+  subject.runtime.tick();
+  assert.equal(callsFor(subject, 1).length, countAfterFloor + 1);
+  assert.equal(lastCall(subject, 1).slot.value, 30);
+});
+
+test('delayed floor confirmation starts the rise deadline at first success', function () {
+  var remainingFloorFailures = 2;
+  var subject = createSubject(1000, function (slot) {
+    if (remainingFloorFailures > 0 && slot.id === 1 && slot.value < 30) {
+      remainingFloorFailures -= 1;
+      throw new Error('floor delayed');
+    }
+  });
+  var floorSuccessCount;
+  var confirmedRiseAt;
+  playAdaptive(subject, 'first-delayed', 'clitoris', 60);
+  subject.loaded.setNow(1400);
+  playAdaptive(subject, 'second-delayed', 'clitoris', 60);
+  subject.loaded.setNow(1700);
+  subject.runtime.tick();
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, false);
+  subject.loaded.setNow(1800);
+  subject.runtime.tick();
+  floorSuccessCount = callsFor(subject, 1).length;
+  confirmedRiseAt = subject.runtime.hapticSnapshot().slotEnvelopes[1].riseAt;
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, true);
+  assert.equal(confirmedRiseAt > 1800, true);
+  subject.loaded.setNow(1801);
+  subject.runtime.tick();
+  assert.equal(callsFor(subject, 1).length, floorSuccessCount);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'fall');
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].riseAt, confirmedRiseAt);
+  subject.loaded.setNow(Math.ceil(confirmedRiseAt));
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 30);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].phase, 'target');
+});
+
+test('tuple-suppressed floor still confirms before the envelope advances', function () {
+  var subject = createSubject(1000);
+  var profile = retrigger();
+  var callsAfterFirst;
+  var snapshot;
+  profile.minDropPercent = 0;
+  profile.maxDropPercent = 0;
+  profile.minRampUpMs = 30;
+  profile.minRampDownMs = 30;
+  subject.runtime.handle(payload('play', {
+    eventId: 'first-suppressed', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({
+      rampUpMs: 30, rampDownMs: 30, retrigger: profile
+    }))]
+  }));
+  callsAfterFirst = callsFor(subject, 1).length;
+  subject.loaded.setNow(1400);
+  subject.runtime.handle(payload('play', {
+    eventId: 'second-suppressed', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({
+      rampUpMs: 30, rampDownMs: 30, retrigger: profile
+    }))]
+  }));
+  assert.equal(callsFor(subject, 1).length, callsAfterFirst);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].floorApplied, true);
+  subject.loaded.setNow(1430);
+  subject.runtime.tick();
+  snapshot = subject.runtime.hapticSnapshot();
+  assert.equal(callsFor(subject, 1).length, callsAfterFirst);
+  assert.equal(snapshot.slotEnvelopes[1].phase, 'target');
+});
+
+test('rapid same-part hits enter one phase-stable texture without queued catch-up', function () {
+  var subject = createSubject(1000);
+  var phaseOrigin;
+  playAdaptive(subject, 'hit-1', 'clitoris', 60);
+  subject.loaded.setNow(1100);
+  playAdaptive(subject, 'hit-2', 'clitoris', 60);
+  subject.loaded.setNow(1180);
+  playAdaptive(subject, 'hit-3', 'clitoris', 60);
+  phaseOrigin = subject.runtime.hapticSnapshot().slotEnvelopes[1].textureStartedAt;
+  subject.loaded.setNow(1260);
+  playAdaptive(subject, 'hit-4', 'clitoris', 60);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].textureStartedAt, phaseOrigin);
+  subject.loaded.setNow(phaseOrigin + 300);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value < 30, true);
+  subject.loaded.setNow(phaseOrigin + 400);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 30);
+});
+
+test('texture floor uses baseline frequency and target uses attack frequency', function () {
+  var subject = createSubject(1000);
+  subject.runtime.handle(payload('set_baseline', {
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 40, frequency: 20 })]
+  }));
+  subject.runtime.handle(payload('play', {
+    eventId: 'first', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({ intensity: 60, frequency: 70 }))]
+  }));
+  subject.loaded.setNow(1100);
+  subject.runtime.handle(payload('play', {
+    eventId: 'second', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({ intensity: 60, frequency: 70 }))]
+  }));
+  assert.equal(lastCall(subject, 1).slot.frequency, 70);
+  subject.loaded.setNow(1200);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.frequency, 20);
+});
+
+test('opposite rotation attack immediately adopts the new direction and effective rise', function () {
+  var subject = createSubject(1000);
+  var call;
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-fast', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'clockwise'
+    }))]
+  }));
+  subject.calls.length = 0;
+  subject.loaded.setNow(1400);
+  subject.runtime.handle(payload('play', {
+    eventId: 'counterclockwise-slow', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 40, rotateDirection: 'counterclockwise'
+    }))]
+  }));
+  assert.equal(callsFor(subject, 3).length, 1);
+  call = lastCall(subject, 3);
+  assert.equal(call.slot.value, 20);
+  assert.equal(call.slot.direction, 'counterclockwise');
+  assert.equal(Math.abs(call.transition.rampSeconds - 0.11333333333333334) < 1e-12, true);
+});
+
+test('a thrown rotation replacement stays uncompleted until a later successful pass', function () {
+  var failReplacement = false;
+  var subject = createSubject(1000, function (slot) {
+    if (failReplacement && slot.id === 3) {
+      failReplacement = false;
+      throw new Error('rotation replacement failed');
+    }
+  });
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-first', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'clockwise'
+    }))]
+  }));
+  failReplacement = true;
+  subject.loaded.setNow(1400);
+  subject.runtime.handle(payload('play', {
+    eventId: 'counterclockwise-replacement', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 40, rotateDirection: 'counterclockwise'
+    }))]
+  }));
+
+  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[3].phase, 'rise');
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[3].phase, 'target');
+});
+
+test('failed shared-slot rotation replacement reasserts the previous winner with its rise', function () {
+  var failReplacement = false;
+  var physical = { value: 0, direction: null, rampSeconds: 0 };
+  var subject = createSubject(1000, function (slot, transition) {
+    if (slot.id !== 3) {
+      return;
+    }
+    physical.value = slot.value;
+    physical.direction = slot.direction;
+    physical.rampSeconds = transition.rampSeconds;
+    if (failReplacement) {
+      failReplacement = false;
+      throw new Error('partial shared-slot replacement');
+    }
+  });
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'older-clitoris-clockwise', sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise',
+      durationMs: 1000, rampUpMs: 120, rampDownMs: 220, priority: 10
+    })]
+  }));
+  failReplacement = true;
+  subject.loaded.setNow(1050);
+  subject.runtime.handle(payload('play', {
+    eventId: 'newer-vagina-counterclockwise', sequence: 1,
+    targets: [target('vagina', {
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'counterclockwise',
+      durationMs: 500, rampUpMs: 40, rampDownMs: 500, priority: 20
+    })]
+  }));
+  assert.equal(physical.direction, 'counterclockwise');
+
+  subject.calls.length = 0;
+  subject.loaded.setNow(1100);
+  subject.runtime.handle(payload('stop', {
+    eventId: 'newer-vagina-counterclockwise'
+  }));
+
+  assert.equal(callsFor(subject, 3).length, 1);
+  assert.equal(lastCall(subject, 3).slot.value, 30);
+  assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
+  assert.equal(lastCall(subject, 3).transition.rampSeconds, 0.12);
+  assert.deepEqual(physical, {
+    value: 30, direction: 'clockwise', rampSeconds: 0.12
+  });
+});
+
+test('failed opposite texture replacement expires to zero with the departing ramp down', function () {
+  var failReplacement = false;
+  var physical = { value: 0, direction: null, rampSeconds: 0 };
+  var subject = createSubject(1000, function (slot, transition) {
+    if (slot.id !== 3) {
+      return;
+    }
+    physical.value = slot.value;
+    physical.direction = slot.direction;
+    physical.rampSeconds = transition.rampSeconds;
+    if (failReplacement) {
+      failReplacement = false;
+      throw new Error('partial texture replacement');
+    }
+  });
+  var textureKey = JSON.stringify(['runtime-test', 'vagina']);
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-texture-1', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 40, rotateDirection: 'clockwise',
+      durationMs: 1000, rampDownMs: 80
+    }))]
+  }));
+  subject.loaded.setNow(1100);
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-texture-2', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise',
+      durationMs: 1000, rampDownMs: 80
+    }))]
+  }));
+  assert.equal(subject.runtime.hapticSnapshot().cadenceRecords[textureKey].mode,
+    'texture');
+
+  failReplacement = true;
+  subject.calls.length = 0;
+  subject.loaded.setNow(1150);
+  subject.runtime.handle(payload('play', {
+    eventId: 'counterclockwise-texture', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'counterclockwise',
+      durationMs: 200, rampUpMs: 90, rampDownMs: 500
+    }))]
+  }));
+  assert.equal(subject.runtime.hapticSnapshot().cadenceRecords[textureKey].mode,
+    'texture');
+  assert.equal(callsFor(subject, 3).length, 1);
+  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(physical.direction, 'counterclockwise');
+
+  subject.loaded.setNow(1350);
+  subject.runtime.tick();
+
+  assert.equal(callsFor(subject, 3).length, 2);
+  assert.equal(lastCall(subject, 3).slot.value, 0);
+  assert.equal(lastCall(subject, 3).slot.direction, null);
+  assert.equal(lastCall(subject, 3).transition.rampSeconds, 0.5);
+  assert.deepEqual(physical, { value: 0, direction: null, rampSeconds: 0.5 });
+  assert.deepEqual(callsFor(subject, 3).map(function (call) {
+    return call.slot.direction;
+  }), ['counterclockwise', null]);
+});
+
+test('same-direction rotation changes speed without an intermediate zero', function () {
+  var subject = createSubject(1000);
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-slow', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 40, rotateDirection: 'clockwise'
+    }))]
+  }));
+  subject.loaded.setNow(1400);
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-fast', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'clockwise'
+    }))]
+  }));
+  assert.equal(lastCall(subject, 3).slot.value > 0, true);
+  assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
+});
+
+test('stopping rotation immediately restores an opposite baseline with its rise', function () {
+  var subject = createSubject(1000);
+  subject.runtime.handle(payload('set_baseline', {
+    sequence: 1,
+    targets: [target('vagina', {
+      rotateSpeed: 30, rotateDirection: 'counterclockwise', rampUpMs: 120
+    })]
+  }));
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-stop', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise'
+    }))]
+  }));
+  subject.calls.length = 0;
+  subject.loaded.setNow(1200);
+  subject.runtime.handle(payload('stop', { eventId: 'clockwise-stop' }));
+  assert.equal(callsFor(subject, 3).length, 1);
+  assert.equal(lastCall(subject, 3).slot.value, 15);
+  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(lastCall(subject, 3).transition.rampSeconds, 0.12);
+});
+
+test('rotation with no successor uses the departing ramp down to zero', function () {
+  var subject = createSubject(0);
+  subject.runtime.handle(payload('play', {
+    eventId: 'only-rotation', sequence: 1,
+    targets: [target('vagina', {
+      rotateSpeed: 60, rotateDirection: 'clockwise', durationMs: 1000,
+      rampUpMs: 100, rampDownMs: 700
+    })]
+  }));
+  subject.calls.length = 0;
+  subject.loaded.setNow(100);
+  subject.runtime.handle(payload('stop', { eventId: 'only-rotation' }));
+  assert.equal(callsFor(subject, 3).length, 1);
+  assert.equal(lastCall(subject, 3).slot.value, 0);
+  assert.equal(lastCall(subject, 3).slot.direction, null);
+  assert.equal(lastCall(subject, 3).transition.rampSeconds, 0.7);
+});
+
+test('restoring an older adaptive part skips a full fall when little lifetime remains', function () {
+  var subject = createSubject(1000);
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'older-vagina', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 80, durationMs: 250
+    }))]
+  }));
+  subject.loaded.setNow(1050);
+  subject.runtime.handle(payload('play', {
+    eventId: 'newer-clitoris', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({
+      intensity: 20, durationMs: 150
+    }))]
+  }));
+  subject.loaded.setNow(1150);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 10);
+
+  subject.loaded.setNow(1200);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 64);
+  assert.equal(lastCall(subject, 1).transition.rampSeconds, 0);
+});
+
+test('frequency-disabled slots keep ordinary fall texture and immediate rotation at zero frequency', function () {
+  var ordinary = createSubject(1000);
+  var adaptive = createSubject(1000);
+  var texture = createSubject(1000);
+  var rotation = createSubject(1000);
+
+  ordinary.runtime.handle(payload('play', {
+    eventId: 'ordinary-frequency', sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 60, frequency: 70, durationMs: 500
+    })]
+  }));
+  assert.equal(lastCall(ordinary, 2).slot.frequency, 0);
+
+  adaptive.runtime.handle(payload('set_baseline', {
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 40, frequency: 20 })]
+  }));
+  adaptive.runtime.handle(payload('play', {
+    eventId: 'adaptive-frequency-1', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({ frequency: 70 }))]
+  }));
+  adaptive.loaded.setNow(1400);
+  adaptive.runtime.handle(payload('play', {
+    eventId: 'adaptive-frequency-2', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({ frequency: 70 }))]
+  }));
+  assert.equal(lastCall(adaptive, 2).slot.frequency, 0);
+
+  texture.runtime.handle(payload('set_baseline', {
+    sequence: 1,
+    targets: [target('clitoris', { intensity: 40, frequency: 20 })]
+  }));
+  texture.runtime.handle(payload('play', {
+    eventId: 'texture-frequency-1', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({ frequency: 70 }))]
+  }));
+  texture.loaded.setNow(1100);
+  texture.runtime.handle(payload('play', {
+    eventId: 'texture-frequency-2', sequence: 1,
+    targets: [target('clitoris', adaptiveValues({ frequency: 70 }))]
+  }));
+  assert.equal(lastCall(texture, 2).slot.frequency, 0);
+  texture.loaded.setNow(1200);
+  texture.runtime.tick();
+  assert.equal(lastCall(texture, 2).slot.frequency, 0);
+
+  rotation.runtime.handle(payload('set_baseline', {
+    sequence: 1,
+    targets: [target('vagina', {
+      frequency: 20, rotateSpeed: 30, rotateDirection: 'clockwise'
+    })]
+  }));
+  rotation.runtime.handle(payload('play', {
+    eventId: 'rotation-frequency', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      frequency: 70, intensity: 0, rotateSpeed: 60,
+      rotateDirection: 'counterclockwise'
+    }))]
+  }));
+  assert.equal(lastCall(rotation, 3).slot.direction, 'counterclockwise');
+  assert.equal(lastCall(rotation, 3).slot.frequency, 0);
+  rotation.loaded.setNow(1100);
+  rotation.runtime.tick();
+  assert.equal(lastCall(rotation, 3).slot.frequency, 0);
+});
+
+test('expiry of an adaptive shared-slot owner resumes a still-valid different-part event', function () {
+  var subject = createSubject(1000);
+  var ownerKey;
+  subject.runtime.handle(payload('play', {
+    eventId: 'strong-vagina', sequence: 1,
+    targets: [target('vagina', {
+      intensity: 90, durationMs: 2000, rampUpMs: 40, rampDownMs: 50
+    })]
+  }));
+  assert.equal(lastCall(subject, 1).slot.value, 72);
+  subject.loaded.setNow(1100);
+  playAdaptive(subject, 'weak-clitoris', 'clitoris', 20);
+  ownerKey = JSON.stringify(['runtime-test', 'weak-clitoris', 'clitoris', 2]);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1].ownerKey, ownerKey);
+  subject.loaded.setNow(1200);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 10);
+  subject.loaded.setNow(1600);
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 1).slot.value, 72);
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[1], undefined);
+});
+
+test('runtime haptic snapshots combine logical diagnostics and defensive envelope copies', function () {
+  var subject = createSubject(1000);
+  var ownerKey = JSON.stringify(['runtime-test', 'diagnostic', 'clitoris', 1]);
+  var snapshot;
+  playAdaptive(subject, 'diagnostic', 'clitoris', 60);
+  snapshot = subject.runtime.hapticSnapshot();
+  assert.deepEqual(Object.keys(snapshot).sort(), [
+    'cadenceRecords', 'partOwners', 'slotEnvelopes'
+  ]);
+  assert.equal(snapshot.cadenceRecords[
+    JSON.stringify(['runtime-test', 'clitoris'])
+  ].mode, 'single');
+  assert.equal(snapshot.slotEnvelopes[1].ownerKey, ownerKey);
+  assert.deepEqual(Object.keys(snapshot.slotEnvelopes[1]).sort(), [
+    'dropPercent', 'fallMs', 'floorApplied', 'ownerGeneration', 'ownerKey',
+    'phase', 'restoredOwner', 'riseAt', 'riseMs', 'textureStartedAt'
+  ]);
+  snapshot.cadenceRecords[JSON.stringify(['runtime-test', 'clitoris'])].mode = 'mutated';
+  snapshot.partOwners[JSON.stringify(['runtime-test', 'clitoris'])].adaptiveEventKey = 'mutated';
+  snapshot.slotEnvelopes[1].phase = 'mutated';
+  snapshot = subject.runtime.hapticSnapshot();
+  assert.equal(snapshot.cadenceRecords[
+    JSON.stringify(['runtime-test', 'clitoris'])
+  ].mode, 'single');
+  assert.equal(snapshot.partOwners[
+    JSON.stringify(['runtime-test', 'clitoris'])
+  ].adaptiveEventKey, JSON.stringify(['runtime-test', 'diagnostic']));
+  assert.equal(snapshot.slotEnvelopes[1].phase, 'target');
+  subject.runtime.stopAll();
+  assert.deepEqual(copy(subject.runtime.hapticSnapshot().slotEnvelopes), {});
+});
+
+test('ordinary attacks retain same-tuple suppression and exact ramp output', function () {
+  var subject = createSubject(1000);
+  var callsAfterFirst;
+  subject.runtime.handle(payload('play', {
+    eventId: 'ordinary-first', sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 60, frequency: 45, durationMs: 1000, rampUpMs: 180
+    })]
+  }));
+  assert.deepEqual({
+    value: lastCall(subject, 1).slot.value,
+    frequency: lastCall(subject, 1).slot.frequency,
+    direction: lastCall(subject, 1).slot.direction,
+    rampSeconds: lastCall(subject, 1).transition.rampSeconds
+  }, {
+    value: 30, frequency: 45, direction: null, rampSeconds: 0.18
+  });
+  callsAfterFirst = callsFor(subject, 1).length;
+  subject.loaded.setNow(1100);
+  subject.runtime.handle(payload('play', {
+    eventId: 'ordinary-second', sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 60, frequency: 45, durationMs: 1000, rampUpMs: 180
+    })]
+  }));
+  assert.equal(callsFor(subject, 1).length, callsAfterFirst);
+  assert.deepEqual(copy(subject.runtime.hapticSnapshot().slotEnvelopes), {});
 });
 
 test('stopAll clears state and dispatches zero-ramp snapshots to every enabled slot', function () {
@@ -513,176 +1072,64 @@ test('stopAll clears state and dispatches zero-ramp snapshots to every enabled s
   assert.deepEqual(snapshot.events, {});
 });
 
-test('a failed middle-slot dispatch does not block later slots and retries only the failure', function () {
-  var failSlotTwo = true;
+test('a thrown slot call is isolated and the next pass uses only the latest state', function () {
+  var failuresRemaining = 2;
   var subject = createSubject(0, function (slotOutput) {
-    if (slotOutput.id === 2 && failSlotTwo) {
-      failSlotTwo = false;
+    if (slotOutput.id === 2 && failuresRemaining > 0) {
+      failuresRemaining -= 1;
       throw new Error('slot 2 unavailable');
     }
   });
-  var result = subject.runtime.handle(payload('play', {
-    eventId: 'multi-slot',
-    sequence: 1,
+  var result;
+  subject.runtime.handle(payload('play', {
+    eventId: 'latest-only', sequence: 1,
     targets: [target('clitoris', { intensity: 80, durationMs: 1000 })]
   }));
-
-  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
-  assert.equal(result.changedSlots, 2);
-  assert.deepEqual(copy(result.dispatchFailures), [{
-    slotId: 2,
-    code: 'adapter_apply_failed',
-    detail: 'slot 2 unavailable'
-  }]);
-  assert.deepEqual(subject.logs, [{
-    type: 'dispatch_error',
-    slotId: 2,
-    code: 'adapter_apply_failed',
-    detail: 'slot 2 unavailable'
-  }]);
-
+  result = subject.runtime.handle(payload('update', {
+    eventId: 'latest-only', sequence: 2,
+    targets: [target('clitoris', { intensity: 20, durationMs: 1000 })]
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'dispatchFailures'), false);
   subject.calls.length = 0;
   subject.runtime.tick();
   assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [2]);
+  assert.equal(subject.calls[0].slot.value, 5);
   subject.calls.length = 0;
   subject.runtime.tick();
   assert.deepEqual(subject.calls, []);
+  assert.deepEqual(subject.logs.filter(function (entry) {
+    return entry.type === 'xtoys_call_error';
+  }).map(function (entry) { return entry.slotId; }), [2, 2]);
 });
-
-test('a partial failed pulse dispatch is fully reasserted when output returns to the last successful tuple', function () {
-  var hardware = {};
-  var failNextSlotOne = false;
-  var subject = createSubject(0, function (slotOutput, transition) {
-    if (slotOutput.id !== 1) {
-      return;
-    }
-    hardware.value = slotOutput.value;
-    if (failNextSlotOne) {
-      failNextSlotOne = false;
-      throw new Error('partial slot write');
-    }
-    hardware.frequency = slotOutput.frequency;
-    hardware.direction = slotOutput.direction;
-    hardware.rampSeconds = transition.rampSeconds;
-    hardware.generation = slotOutput.generation;
-  });
-
+test('repeated stopAll is a fresh best-effort zero call for every enabled slot', function () {
+  var subject = createSubject(0);
   subject.runtime.handle(payload('play', {
-    eventId: 'pulse-retry', sequence: 1,
-    targets: [target('clitoris', {
-      effect: 'pulse', intensity: 80, frequency: 70, durationMs: 1000,
-      pulseOnMs: 100, pulseOffMs: 100, rampUpMs: 200, rampDownMs: 300
-    })]
-  }));
-  assert.deepEqual(hardware, {
-    value: 40, frequency: 70, direction: null, rampSeconds: 0.2, generation: 1
-  });
-
-  subject.loaded.setNow(100);
-  failNextSlotOne = true;
-  subject.runtime.tick();
-  assert.equal(hardware.value, 0);
-  subject.calls.length = 0;
-
-  subject.loaded.setNow(200);
-  assert.equal(subject.runtime.tick(), 2);
-  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2]);
-  assert.deepEqual(hardware, {
-    value: 40, frequency: 70, direction: null, rampSeconds: 0.2, generation: 3
-  });
-});
-
-test('stopAll continues past a failed slot and the next tick retries only that zero', function () {
-  var failStopSlotTwo = false;
-  var subject = createSubject(0, function (slotOutput) {
-    if (slotOutput.id === 2 && failStopSlotTwo) {
-      failStopSlotTwo = false;
-      throw new Error('slot 2 stop failed');
-    }
-  });
-  var stopCalls;
-
-  subject.runtime.handle(payload('play', {
-    eventId: 'active',
-    sequence: 1,
-    targets: [target('clitoris', {
-      intensity: 80, durationMs: 1000, rampDownMs: 4000
-    })]
+    eventId: 'active', sequence: 1,
+    targets: [target('clitoris', { intensity: 80, durationMs: 1000 })]
   }));
   subject.calls.length = 0;
-  subject.logs.length = 0;
-  failStopSlotTwo = true;
-  subject.runtime.stopAll();
-  stopCalls = subject.calls.slice();
-
-  assert.deepEqual(stopCalls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
-  stopCalls.forEach(function (call) {
+  assert.equal(subject.runtime.stopAll(), 3);
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
+  subject.calls.length = 0;
+  assert.equal(subject.runtime.stopAll(), 3);
+  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
+  subject.calls.forEach(function (call) {
     assert.equal(call.slot.value, 0);
+    assert.equal(call.slot.frequency, 0);
+    assert.equal(call.slot.direction, null);
     assert.equal(call.transition.rampSeconds, 0);
   });
-  assert.deepEqual(subject.logs, [{
-    type: 'dispatch_error',
-    slotId: 2,
-    code: 'adapter_apply_failed',
-    detail: 'slot 2 stop failed'
-  }]);
-
-  subject.calls.length = 0;
-  subject.runtime.tick();
-  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [2]);
-  assert.equal(subject.calls[0].slot.value, 0);
-  assert.equal(subject.calls[0].transition.rampSeconds, 0);
-  subject.calls.length = 0;
-  subject.runtime.tick();
-  assert.deepEqual(subject.calls, []);
 });
-
-test('recent failure snapshots are copied and a chosen slot cache can be invalidated', function () {
-  var failSlotTwo = true;
-  var subject = createSubject(0, function (slotOutput) {
-    if (slotOutput.id === 2 && failSlotTwo) {
-      failSlotTwo = false;
-      throw new Error('copy me');
-    }
-  });
-  var failures;
-  subject.runtime.handle(payload('play', {
-    eventId: 'failure-copy',
-    sequence: 1,
-    targets: [target('clitoris', { intensity: 80, durationMs: 1000 })]
-  }));
-  failures = subject.runtime.recentFailures();
-  failures[0].detail = 'mutated';
-  assert.equal(subject.runtime.recentFailures()[0].detail, 'copy me');
-
-  subject.calls.length = 0;
-  subject.runtime.invalidateSlot(1);
-  assert.equal(subject.runtime.tick(), 2);
-  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2]);
-});
-
-test('forceResync redispatches the complete current enabled-slot snapshot', function () {
-  var subject = createSubject(0);
-  subject.runtime.handle(payload('set_baseline', {
-    sequence: 1,
-    targets: [target('clitoris', { intensity: 80 })]
-  }));
-  subject.calls.length = 0;
-
-  assert.equal(subject.runtime.forceResync(), 3);
-  assert.deepEqual(subject.calls.map(function (call) { return call.slot.id; }), [1, 2, 3]);
-  assert.deepEqual(subject.calls.map(function (call) { return call.slot.value; }), [40, 20, 0]);
-});
-
 test('built public globals preserve the complete baseline attack stop expiry and stop-all flow', function () {
   var loaded = publicSubject();
   var actionStart = 0;
 
   assert.equal(loaded.context.xtoysBridgeInit(), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 1 },
-    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 1 },
-    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 1 }
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0 },
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0 },
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0 }
   ]);
 
   actionStart = loaded.actions.length;
@@ -699,9 +1146,9 @@ test('built public globals preserve the complete baseline attack stop expiry and
     ]
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 10, frequency: 11, rampSeconds: 1, directionCode: 0, generation: 2 },
-    { value: 5, frequency: 0, rampSeconds: 1, directionCode: 0, generation: 2 },
-    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1, generation: 2 }
+    { value: 10, frequency: 11, rampSeconds: 1, directionCode: 0 },
+    { value: 5, frequency: 0, rampSeconds: 1, directionCode: 0 },
+    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1 }
   ]);
 
   loaded.setNow(100);
@@ -716,9 +1163,9 @@ test('built public globals preserve the complete baseline attack stop expiry and
     })]
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0, generation: 3 },
-    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 3 },
-    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1, generation: 2 }
+    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0 },
+    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0 },
+    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1 }
   ], [1, 2]);
 
   loaded.setNow(120);
@@ -733,9 +1180,9 @@ test('built public globals preserve the complete baseline attack stop expiry and
     })]
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0, generation: 3 },
-    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 3 },
-    { value: 37, frequency: 0, rampSeconds: 0.3, directionCode: 1, generation: 4 }
+    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0 },
+    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0 },
+    { value: 37, frequency: 0, rampSeconds: 0.3, directionCode: 1 }
   ], [3]);
 
   loaded.setNow(150);
@@ -750,9 +1197,9 @@ test('built public globals preserve the complete baseline attack stop expiry and
     })]
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0, generation: 3 },
-    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 3 },
-    { value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1, generation: 5 }
+    { value: 46, frequency: 70, rampSeconds: 0.2, directionCode: 0 },
+    { value: 24, frequency: 0, rampSeconds: 0.2, directionCode: 0 },
+    { value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1 }
   ], [3]);
 
   loaded.setNow(200);
@@ -763,9 +1210,9 @@ test('built public globals preserve the complete baseline attack stop expiry and
     targets: [target('clitoris')]
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 10, frequency: 11, rampSeconds: 0.4, directionCode: 0, generation: 6 },
-    { value: 5, frequency: 0, rampSeconds: 0.4, directionCode: 0, generation: 6 },
-    { value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1, generation: 5 }
+    { value: 10, frequency: 11, rampSeconds: 0.4, directionCode: 0 },
+    { value: 5, frequency: 0, rampSeconds: 0.4, directionCode: 0 },
+    { value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1 }
   ], [1, 2]);
 
   loaded.setNow(949);
@@ -773,16 +1220,16 @@ test('built public globals preserve the complete baseline attack stop expiry and
   assert.equal(loaded.context.xtoysBridgeTick(), 0);
   assert.deepEqual(loaded.actions.slice(actionStart), []);
   assert.deepEqual(slotVariables(loaded, 3), {
-    value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1, generation: 5
+    value: 46, frequency: 0, rampSeconds: 0.1, directionCode: -1
   });
 
   loaded.setNow(950);
   actionStart = loaded.actions.length;
   assert.equal(loaded.context.xtoysBridgeTick(), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 10, frequency: 11, rampSeconds: 0.4, directionCode: 0, generation: 6 },
-    { value: 5, frequency: 0, rampSeconds: 0.4, directionCode: 0, generation: 6 },
-    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1, generation: 7 }
+    { value: 10, frequency: 11, rampSeconds: 0.4, directionCode: 0 },
+    { value: 5, frequency: 0, rampSeconds: 0.4, directionCode: 0 },
+    { value: 10, frequency: 0, rampSeconds: 0.5, directionCode: 1 }
   ], [3]);
 
   loaded.setNow(1000);
@@ -791,9 +1238,9 @@ test('built public globals preserve the complete baseline attack stop expiry and
     source: 'acceptance', sequence: 2, targets: []
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 0, frequency: 0, rampSeconds: 2, directionCode: 0, generation: 8 },
-    { value: 0, frequency: 0, rampSeconds: 2, directionCode: 0, generation: 8 },
-    { value: 0, frequency: 0, rampSeconds: 0.7, directionCode: 0, generation: 8 }
+    { value: 0, frequency: 0, rampSeconds: 2, directionCode: 0 },
+    { value: 0, frequency: 0, rampSeconds: 2, directionCode: 0 },
+    { value: 0, frequency: 0, rampSeconds: 0.7, directionCode: 0 }
   ]);
 
   actionStart = loaded.actions.length;
@@ -801,9 +1248,9 @@ test('built public globals preserve the complete baseline attack stop expiry and
     source: 'acceptance'
   }), 1);
   assertPublicStep(loaded, actionStart, [
-    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 },
-    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 },
-    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 9 }
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0 },
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0 },
+    { value: 0, frequency: 0, rampSeconds: 0, directionCode: 0 }
   ]);
 });
 
@@ -878,17 +1325,17 @@ test('built public handler processes 500 timed update commands with deterministi
     return action.job === 'xthb-output-03';
   }), false);
   assert.deepEqual(slotVariables(loaded, 1), {
-    value: 40, frequency: 55, rampSeconds: 0.2, directionCode: 0, generation: 502
+    value: 40, frequency: 55, rampSeconds: 0.2, directionCode: 0
   });
   assert.deepEqual(slotVariables(loaded, 2), {
-    value: 20, frequency: 0, rampSeconds: 0.2, directionCode: 0, generation: 502
+    value: 20, frequency: 0, rampSeconds: 0.2, directionCode: 0
   });
   assert.deepEqual(slotVariables(loaded, 3), {
-    value: 0, frequency: 0, rampSeconds: 0, directionCode: 0, generation: 1
+    value: 0, frequency: 0, rampSeconds: 0, directionCode: 0
   });
   assert.equal(loaded.logs.length, 10);
   loaded.logs.forEach(function (entry) {
-    assert.equal(entry, 'XTHB debug: 100 successful slot updates.');
+    assert.equal(entry, 'XTHB debug: 100 XToys slot calls completed without exception.');
   });
 });
 

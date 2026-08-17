@@ -1,5 +1,7 @@
 # XToys Runtime Performance Hardening Design
 
+> **Superseded in part:** Physical generation, retained failed-dispatch retry/resync, live reload rollback, and zero-before-reverse requirements are replaced by [XToys Runtime Simplification and Immediate Rotation Design](2026-08-18-xtoys-runtime-simplification-design.md). Logical generation, bounded logical state, cadence, routing, and non-reversal haptic behavior remain authoritative.
+
 ## Goal
 
 Bound the runtime's worst-case state size, remove repeated full-state serialization from hot paths, and avoid XToys Job calls when the physical actuator tuple did not change. The optimized runtime must preserve protocol v1 output, pulse, ramp, arbitration, retry, preview, and stop safety semantics.

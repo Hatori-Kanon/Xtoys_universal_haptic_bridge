@@ -54,6 +54,46 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 
 所有数值必须是有限数。`intensity`、`frequency`、`rotateSpeed` 会夹到 0–100；`durationMs`、渐变和脉冲时间会夹到 0–600000 ms。协议不控制设备的最大强度或最大旋转速度。
 
+### 自适应重复触发（可选）
+
+在瞬态 `hold` 目标上可显式加入以下**恰好七个字段**的 `retrigger` 对象；它不会改变协议版本，也不能用于基线、停止选择器或 `pulse` 目标：
+
+```json
+{
+  "mode": "adaptive",
+  "minDropPercent": 25,
+  "maxDropPercent": 100,
+  "minRampUpMs": 30,
+  "minRampDownMs": 20,
+  "textureThresholdMs": 150,
+  "quietResetMs": 600
+}
+```
+
+七个字段均必填，数值必须有限，并满足下列闭区间/相对约束；超出范围返回 `invalid_retrigger`：
+
+| 字段 | 约束 |
+| --- | --- |
+| `mode` | 必须严格等于 `adaptive`。 |
+| `minDropPercent` | `0`–`100`。 |
+| `maxDropPercent` | `minDropPercent`–`100`。 |
+| `minRampUpMs` | `0`–目标的 `rampUpMs`，且不超过 `600000` ms。 |
+| `minRampDownMs` | `0`–目标的 `rampDownMs`，且不超过 `600000` ms。 |
+| `textureThresholdMs` | `100`–`600000` ms。 |
+| `quietResetMs` | 严格大于 `textureThresholdMs`，且不超过 `600000` ms。 |
+
+另外必须满足 `minRampDownMs + 100 + minRampUpMs <= durationMs`；不满足时返回 `invalid_retrigger_timing`。因此默认最小值 `20 + 100 + 30` 的最短合法目标持续时间为 `150` ms。`durationMs`、目标 ramp 与这两个 cadence 阈值的协议最大值均为 `600000` ms；运行时不会默默保留超过此上界的 retrigger cadence。
+
+连续命中同一 `source + part` 时，运行时在 `quietResetMs` 内以 `0.75 * 旧平均间隔 + 0.25 * 新间隔` 更新 EMA；静默达到该值后清除 cadence。平均间隔低于 `textureThresholdMs` 进入 texture，否则进入 adaptive。adaptive 会从当前胜出基线向下落到按间隔插值的 floor，再按插值 ramp 回到攻击值；所有 fall/rise 时间至少分别为 `minRampDownMs`/`minRampUpMs`，并在剩余持续时间不足时按比例压缩。`textureThresholdMs` 至少为 100 ms，调度器采样周期为 100 ms。
+
+texture 使用不低于 200 ms 的完整周期（按目标/基线两半交替）：floor 半段恢复基线频率，target 半段使用攻击频率；到期后仍由下一次 100 ms tick 清理。`frequencyEnabled: false` 的槽在普通输出、adaptive fall/rise、texture 两相和旋转反转期间都强制输出频率 `0`，不会从 winner 或基线 metadata 泄漏频率。相同来源、相同部位的新事件会取消该部位的旧事件；不同部位即使共享一个物理槽也不会互相删除，前者到期或停止后后者会恢复为仍活跃的胜者。这个恢复不是一次新命中：不会重新执行完整 fall；rise 会按旧事件剩余寿命收紧，少于一个调度周期时立即恢复当前目标。相同输出值本身不会触发重置，必须提供 `retrigger`。
+
+当显式新 winner 取代旋转方向时，运行时立即在同一次输出刷新中使用新方向和新 winner 的有效渐入时间；不会先下发零速度，也不会等待旧 winner 的 `rampDownMs`。只有没有后继 winner 的释放才会走向零。适配器只使用显式 `rotateDirection`，不会推断或自动交替方向。
+
+### 错误代码
+
+解析/配置错误返回 `ok: false` 与以下代码之一：`invalid_payload`、`payload_too_large`、`invalid_json`、`unsupported_protocol_version`、`unsupported_command`、`missing_source`、`identifier_too_long`、`invalid_states`、`too_many_states`、`state_label_too_long`、`missing_event_id`、`invalid_sequence`、`invalid_duration`、`invalid_targets`、`too_many_targets`、`missing_targets`、`missing_stop_selector`、`unknown_part`、`unknown_group`、`invalid_effect`、`invalid_number`、`invalid_rotate_direction`、`invalid_blend`、`invalid_baseline_blend`、`invalid_retrigger`、`invalid_retrigger_effect`、`invalid_retrigger_timing`、`invalid_config`、`invalid_log_level`、`invalid_global_multiplier`、`invalid_groups`、`missing_group`、`invalid_group_weight`、`invalid_route_weight`、`invalid_slot_count`、`invalid_slot`、`invalid_slot_id`、`invalid_slot_enabled`、`invalid_slot_type`、`invalid_frequency_enabled`。接受命令但因保留状态容量拒绝时返回 `state_capacity_exceeded`；同步 XToys JavaScript 调用抛错时记录 `xtoys_call_error`。调用同步返回只表示 JavaScript 调用没有抛错，不表示硬件已经完成或确认该输出。
+
 支持的叶子部位为：`mouth`、`breast`、`nipple`、`armpit`、`clitoris`、`vulva`、`vagina`、`urethra`、`anus`、`butt`、`penis`、`prostate`。
 
 支持的虚拟组为：`genitals`、`lower_body`、`double_hole`、`whole_body`、`mixed`。组到叶子部位的权重由 XToys 配置决定；游戏应在能区分时发送叶子部位。
@@ -81,6 +121,8 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
   "payload": "{\"protocolVersion\":1,\"command\":\"update\",\"source\":\"my-game\",\"eventId\":\"drill-7\",\"sequence\":2,\"targets\":[{\"part\":\"vagina\",\"rotateSpeed\":60,\"rotateDirection\":\"counterclockwise\",\"durationMs\":1500,\"rampUpMs\":100,\"rampDownMs\":200}]}"
 }
 ```
+
+该更新被接受后，当前旋转槽在同一次输出 Job 刷新中采用 counterclockwise 与新速度，并使用该目标当前有效的 rampUpMs。运行时不会先发送零速度，也不会等待旧目标的 rampDownMs。XToys 调用返回不代表设备已经完成换向。
 
 ### `stop`
 
@@ -141,9 +183,9 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 
 XToys 先将虚拟组权重、叶子到槽的路由权重和 `globalMultiplier` 相乘，再夹到 0–100。一个强度槽只读 `intensity`，一个旋转槽只读 `rotateSpeed`；同一目标可以同时包含两者，以驱动不同的独立槽。
 
-同一槽有多个候选时，基线取有效值最高者。瞬态依次按 `priority`、有效值、`sequence`、接受时间和 generation 选择胜者。默认 `boost` 为 `B + A * (100 - B) / 100`；`replace` 使用瞬态值，`max` 使用两者较大值。旋转方向不做数值混合：瞬态脉冲开区间使用瞬态的显式方向，关区间和结束后回到胜出基线的方向。
+同一槽有多个候选时，基线取有效值最高者。瞬态依次按 `priority`、有效值、`sequence`、接受时间和逻辑 generation 选择胜者。逻辑 generation 只用于状态仲裁：较旧的逻辑事件不得擦除较新的事件。默认 `boost` 为 `B + A * (100 - B) / 100`；`replace` 使用瞬态值，`max` 使用两者较大值。旋转方向不做数值混合：瞬态脉冲开区间使用瞬态的显式方向，关区间和结束后回到胜出基线的方向。
 
-`pulse` 的开关按 `(当前时间 - 接受时间) % (pulseOnMs + pulseOffMs)` 计算。调度器每 0.1 秒调用一次，因此到期、脉冲切换和基线恢复在下一次调度时落到物理槽；旧 generation 不得将较新事件归零。
+`pulse` 的开关按 `(当前时间 - 接受时间) % (pulseOnMs + pulseOffMs)` 计算。调度器每 0.1 秒调用一次，因此到期、脉冲切换和基线恢复在下一次调度时落到物理槽；较旧的逻辑 generation 不得将较新事件归零。
 
 ## 限制与失败处理
 

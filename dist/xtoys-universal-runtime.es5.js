@@ -10,6 +10,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
   ns.MAX_STATE_LABEL_LENGTH = 128;
   ns.MAX_ACTIVE_EVENTS = 128;
   ns.MAX_ACTIVE_EVENT_TARGETS = 256;
+  ns.SCHEDULER_INTERVAL_MS = 100;
+  ns.MAX_CADENCE_RECORDS = ns.MAX_ACTIVE_EVENT_TARGETS;
   ns.MAX_BASELINE_SOURCES = 64;
   ns.MAX_BASELINE_TARGETS = 256;
   ns.MAX_TIME_MS = 600000;
@@ -247,6 +249,67 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return numberValue(value, code);
   }
 
+  function normalizedRetrigger(raw, target) {
+    var required = [
+      'mode', 'minDropPercent', 'maxDropPercent', 'minRampUpMs',
+      'minRampDownMs', 'textureThresholdMs', 'quietResetMs'
+    ];
+    var index;
+    var value;
+    var result = {};
+    if (raw === undefined) {
+      return { ok: true, value: null };
+    }
+    if (!isObject(raw)) {
+      return fail('invalid_retrigger', 'Retrigger must be an object.');
+    }
+    for (index = 0; index < required.length; index += 1) {
+      if (!hasOwn.call(raw, required[index])) {
+        return fail('invalid_retrigger', 'Every retrigger field is required.');
+      }
+    }
+    if (raw.mode !== 'adaptive') {
+      return fail('invalid_retrigger', 'Unsupported retrigger mode.');
+    }
+    if (target.effect !== 'hold') {
+      return fail('invalid_retrigger_effect', 'Adaptive retrigger requires hold effect.');
+    }
+    value = numberValue(raw.minDropPercent, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minDropPercent = value.value;
+    value = numberValue(raw.maxDropPercent, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.maxDropPercent = value.value;
+    value = numberValue(raw.minRampUpMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minRampUpMs = value.value;
+    value = numberValue(raw.minRampDownMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minRampDownMs = value.value;
+    value = numberValue(raw.textureThresholdMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.textureThresholdMs = value.value;
+    value = numberValue(raw.quietResetMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.quietResetMs = value.value;
+    if (result.minDropPercent < 0 || result.maxDropPercent > 100 ||
+        result.minDropPercent > result.maxDropPercent ||
+        result.minRampUpMs < 0 || result.minRampUpMs > target.rampUpMs ||
+        result.minRampDownMs < 0 || result.minRampDownMs > target.rampDownMs ||
+        result.textureThresholdMs < ns.SCHEDULER_INTERVAL_MS ||
+        result.textureThresholdMs > ns.MAX_TIME_MS ||
+        result.quietResetMs > ns.MAX_TIME_MS ||
+        result.quietResetMs <= result.textureThresholdMs) {
+      return fail('invalid_retrigger', 'Retrigger ranges are inconsistent.');
+    }
+    if (result.minRampDownMs + ns.SCHEDULER_INTERVAL_MS +
+        result.minRampUpMs > target.durationMs) {
+      return fail('invalid_retrigger_timing', 'Minimum retrigger envelope exceeds duration.');
+    }
+    result.mode = 'adaptive';
+    return { ok: true, value: result };
+  }
+
   function normalizedTarget(raw, config, transient) {
     var parsed;
     var rotateSpeed;
@@ -285,7 +348,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       pulseOffMs: 0,
       priority: 0,
       blend: raw.blend === undefined ? 'replace' : raw.blend,
-      baselineBlend: raw.baselineBlend === undefined ? 'boost' : raw.baselineBlend
+      baselineBlend: raw.baselineBlend === undefined ? 'boost' : raw.baselineBlend,
+      retrigger: null
     };
     parsed = optionalNumber(raw.frequency, 0, 'invalid_number');
     if (!parsed.ok) {
@@ -345,6 +409,15 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       return parsed;
     }
     target.priority = parsed.value;
+    if (transient) {
+      parsed = normalizedRetrigger(raw.retrigger, target);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      target.retrigger = parsed.value;
+    } else if (raw.retrigger !== undefined) {
+      return fail('invalid_retrigger', 'Retrigger is only supported for transient targets.');
+    }
     return { ok: true, value: target };
   }
 
@@ -536,6 +609,10 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return ns.compositeKey([source, part]);
   }
 
+  function partKey(source, part) {
+    return ns.compositeKey([source, part]);
+  }
+
   function sourceKey(source) {
     return ns.compositeKey([source]);
   }
@@ -563,7 +640,18 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         copied[key] = target[key];
       }
     }
+    if (copied.retrigger !== null && copied.retrigger !== undefined) {
+      copied.retrigger = copyOwnMap(copied.retrigger);
+    }
     return copied;
+  }
+
+  function copyOwner(owner) {
+    return {
+      eventKeys: copyOwnMap(owner.eventKeys),
+      adaptiveEventKey: owner.adaptiveEventKey,
+      adaptiveGeneration: owner.adaptiveGeneration
+    };
   }
 
   function addPart(parts, part) {
@@ -607,7 +695,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         acceptedAt: nowMs,
         expiresAt: nowMs + message.targets[index].durationMs,
         generation: nextGeneration,
-        target: copyTarget(message.targets[index])
+        target: copyTarget(message.targets[index]),
+        cadence: null
       });
     }
     return entries;
@@ -625,13 +714,18 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var baseline = {};
     var events = {};
     var baselineSequences = {};
+    var cadenceRecords = {};
+    var partOwners = {};
     var generation = 0;
     var engine = {};
 
-    function publish(nextBaseline, nextEvents, nextBaselineSequences, nextGeneration) {
+    function publish(nextBaseline, nextEvents, nextBaselineSequences,
+        nextCadenceRecords, nextPartOwners, nextGeneration) {
       baseline = nextBaseline;
       events = nextEvents;
       baselineSequences = nextBaselineSequences;
+      cadenceRecords = nextCadenceRecords;
+      partOwners = nextPartOwners;
       generation = nextGeneration;
       engine.baseline = baseline;
       engine.events = events;
@@ -712,14 +806,236 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       return count;
     }
 
+    function ownerForWrite(candidateOwners, copiedOwners, key) {
+      if (!hasOwn.call(candidateOwners, key)) {
+        candidateOwners[key] = {
+          eventKeys: {},
+          adaptiveEventKey: null,
+          adaptiveGeneration: null
+        };
+        copiedOwners[key] = true;
+      } else if (!hasOwn.call(copiedOwners, key)) {
+        candidateOwners[key] = copyOwner(candidateOwners[key]);
+        copiedOwners[key] = true;
+      }
+      return candidateOwners[key];
+    }
+
+    function hasPartEntry(entries, source, part, adaptiveOnly) {
+      var index;
+      for (index = 0; index < entries.length; index += 1) {
+        if (entries[index].source === source && entries[index].target.part === part &&
+            (!adaptiveOnly || entries[index].target.retrigger !== null)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function removeEntryOwnership(candidateOwners, copiedOwners, key,
+        removedEntries, keptEntries) {
+      var index;
+      var entry;
+      var keyForPart;
+      var owner;
+      var seen = {};
+      var seenKey;
+      for (index = 0; index < removedEntries.length; index += 1) {
+        entry = removedEntries[index];
+        keyForPart = partKey(entry.source, entry.target.part);
+        seenKey = ns.compositeKey([
+          entry.source, entry.target.part, entry.generation
+        ]);
+        if (hasOwn.call(seen, seenKey)) {
+          continue;
+        }
+        seen[seenKey] = true;
+        if (!hasOwn.call(candidateOwners, keyForPart)) {
+          continue;
+        }
+        owner = candidateOwners[keyForPart];
+        if (owner.eventKeys[key] === entry.generation &&
+            !hasPartEntry(keptEntries, entry.source, entry.target.part, false)) {
+          owner = ownerForWrite(candidateOwners, copiedOwners, keyForPart);
+          delete owner.eventKeys[key];
+        }
+        if (owner.adaptiveEventKey === key &&
+            owner.adaptiveGeneration === entry.generation &&
+            !hasPartEntry(keptEntries, entry.source, entry.target.part, true)) {
+          owner = ownerForWrite(candidateOwners, copiedOwners, keyForPart);
+          owner.adaptiveEventKey = null;
+          owner.adaptiveGeneration = null;
+        }
+        if (ownKeyCount(owner.eventKeys) === 0) {
+          delete candidateOwners[keyForPart];
+          delete copiedOwners[keyForPart];
+        }
+      }
+    }
+
+    function addEntryOwnership(candidateOwners, copiedOwners, key, entry) {
+      var keyForPart = partKey(entry.source, entry.target.part);
+      var owner = ownerForWrite(candidateOwners, copiedOwners, keyForPart);
+      owner.eventKeys[key] = entry.generation;
+      if (entry.target.retrigger !== null) {
+        owner.adaptiveEventKey = key;
+        owner.adaptiveGeneration = entry.generation;
+      }
+    }
+
+    function supersedePart(candidateEvents, candidateOwners, copiedOwners,
+        source, part, incomingKey, parts) {
+      var keyForPart = partKey(source, part);
+      var owner = candidateOwners[keyForPart];
+      var ownedEventKey;
+      var entries;
+      var keptEntries;
+      var removedEntries;
+      var index;
+      if (owner === undefined) {
+        return;
+      }
+      for (ownedEventKey in owner.eventKeys) {
+        if (hasOwn.call(owner.eventKeys, ownedEventKey) &&
+            ownedEventKey !== incomingKey &&
+            hasOwn.call(candidateEvents, ownedEventKey)) {
+          entries = candidateEvents[ownedEventKey];
+          keptEntries = [];
+          removedEntries = [];
+          for (index = 0; index < entries.length; index += 1) {
+            if (entries[index].source === source &&
+                entries[index].target.part === part) {
+              removedEntries.push(entries[index]);
+            } else {
+              keptEntries.push(entries[index]);
+            }
+          }
+          if (removedEntries.length > 0) {
+            addPart(parts, part);
+            if (keptEntries.length === 0) {
+              delete candidateEvents[ownedEventKey];
+            } else {
+              candidateEvents[ownedEventKey] = keptEntries;
+            }
+            removeEntryOwnership(candidateOwners, copiedOwners, ownedEventKey,
+              removedEntries, keptEntries);
+          }
+        }
+      }
+    }
+
+    function pruneExpiredOwner(candidateEvents, candidateOwners, copiedOwners,
+        ownerKey, nowMs, parts) {
+      var owner = candidateOwners[ownerKey];
+      var ownedEventKey;
+      var entries;
+      var keptEntries;
+      var removedEntries;
+      var index;
+      if (owner === undefined) {
+        return;
+      }
+      for (ownedEventKey in owner.eventKeys) {
+        if (hasOwn.call(owner.eventKeys, ownedEventKey) &&
+            hasOwn.call(candidateEvents, ownedEventKey)) {
+          entries = candidateEvents[ownedEventKey];
+          keptEntries = [];
+          removedEntries = [];
+          for (index = 0; index < entries.length; index += 1) {
+            if (partKey(entries[index].source, entries[index].target.part) === ownerKey &&
+                entries[index].expiresAt <= nowMs) {
+              removedEntries.push(entries[index]);
+            } else {
+              keptEntries.push(entries[index]);
+            }
+          }
+          if (removedEntries.length > 0) {
+            addEntryParts(parts, removedEntries);
+            if (keptEntries.length === 0) {
+              delete candidateEvents[ownedEventKey];
+            } else {
+              candidateEvents[ownedEventKey] = keptEntries;
+            }
+            removeEntryOwnership(candidateOwners, copiedOwners, ownedEventKey,
+              removedEntries, keptEntries);
+          }
+        }
+      }
+    }
+
+    function pruneExpiredEntries(candidateEvents, candidateOwners, copiedOwners,
+        nowMs, parts) {
+      var ownerKey;
+      var ownerKeys = [];
+      var index;
+      for (ownerKey in candidateOwners) {
+        if (hasOwn.call(candidateOwners, ownerKey)) {
+          ownerKeys.push(ownerKey);
+        }
+      }
+      for (index = 0; index < ownerKeys.length; index += 1) {
+        pruneExpiredOwner(candidateEvents, candidateOwners, copiedOwners,
+          ownerKeys[index], nowMs, parts);
+      }
+    }
+
+    function cleanQuietCadence(records, nowMs) {
+      var key;
+      var record;
+      var nextRecords = records;
+      var copied = false;
+      for (key in records) {
+        if (hasOwn.call(records, key)) {
+          record = records[key];
+          if (nowMs - record.lastAttackAt >= record.quietResetMs) {
+            if (!copied) {
+              nextRecords = copyOwnMap(records);
+              copied = true;
+            }
+            delete nextRecords[key];
+          }
+        }
+      }
+      return nextRecords;
+    }
+
+    function oldestInactiveCadenceKey(records, owners) {
+      var key;
+      var owner;
+      var oldestKey = null;
+      var oldestAt = null;
+      for (key in records) {
+        if (hasOwn.call(records, key)) {
+          owner = owners[key];
+          if (owner === undefined || owner.adaptiveEventKey === null) {
+            if (oldestKey === null || records[key].lastAttackAt < oldestAt ||
+                (records[key].lastAttackAt === oldestAt && key < oldestKey)) {
+              oldestKey = key;
+              oldestAt = records[key].lastAttackAt;
+            }
+          }
+        }
+      }
+      return oldestKey;
+    }
+
     function applyEvent(message, nowMs, dryRun) {
       var key = eventKey(message.source, message.eventId);
       var current = events[key];
       var nextEvents;
       var nextEntries;
+      var nextCadenceRecords;
+      var nextPartOwners;
+      var copiedOwners = {};
+      var cadenceCopied;
+      var keyForPart;
+      var previousCadence;
+      var nextCadence;
+      var evictionKey;
       var counts;
       var parts = [];
       var nextGeneration;
+      var index;
 
       if (message.command === 'update' &&
           (!hasOwn.call(events, key) || !hasActiveEntry(current, nowMs))) {
@@ -731,10 +1047,55 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       nextGeneration = generation + 1;
       nextEntries = createEventEntries(message, nowMs, nextGeneration);
       nextEvents = copyOwnMap(events);
+      nextPartOwners = copyOwnMap(partOwners);
+      pruneExpiredEntries(nextEvents, nextPartOwners, copiedOwners,
+        nowMs, parts);
+      nextCadenceRecords = cleanQuietCadence(
+        cadenceRecords, nowMs
+      );
+      cadenceCopied = nextCadenceRecords !== cadenceRecords;
       if (hasOwn.call(events, key)) {
         addEntryParts(parts, events[key]);
+        delete nextEvents[key];
+        removeEntryOwnership(nextPartOwners, copiedOwners, key,
+          events[key], []);
       }
       addEntryParts(parts, nextEntries);
+
+      for (index = 0; index < nextEntries.length; index += 1) {
+        if (nextEntries[index].target.retrigger !== null) {
+          keyForPart = partKey(message.source, nextEntries[index].target.part);
+          supersedePart(nextEvents, nextPartOwners, copiedOwners,
+            message.source, nextEntries[index].target.part, key, parts);
+          if (!hasOwn.call(nextCadenceRecords, keyForPart) &&
+              ownKeyCount(nextCadenceRecords) >= ns.MAX_CADENCE_RECORDS) {
+            evictionKey = oldestInactiveCadenceKey(
+              nextCadenceRecords, nextPartOwners
+            );
+            if (evictionKey === null) {
+              return capacityResult('Cadence record limit exceeded.', dryRun);
+            }
+            if (!cadenceCopied) {
+              nextCadenceRecords = copyOwnMap(nextCadenceRecords);
+              cadenceCopied = true;
+            }
+            delete nextCadenceRecords[evictionKey];
+          }
+          previousCadence = hasOwn.call(nextCadenceRecords, keyForPart)
+            ? nextCadenceRecords[keyForPart]
+            : null;
+          nextCadence = ns.nextCadence(previousCadence,
+            nextEntries[index].target, nowMs, nextGeneration);
+          if (!cadenceCopied) {
+            nextCadenceRecords = copyOwnMap(nextCadenceRecords);
+            cadenceCopied = true;
+          }
+          nextCadenceRecords[keyForPart] = nextCadence;
+          nextEntries[index].cadence = nextCadence;
+        }
+        addEntryOwnership(nextPartOwners, copiedOwners, key,
+          nextEntries[index]);
+      }
       nextEvents[key] = nextEntries;
       counts = activeEventCounts(nextEvents, nowMs);
       if (counts.events > ns.MAX_ACTIVE_EVENTS) {
@@ -744,7 +1105,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         return capacityResult('Active event target limit exceeded.', dryRun);
       }
       if (!dryRun) {
-        publish(baseline, nextEvents, baselineSequences, nextGeneration);
+        publish(baseline, nextEvents, baselineSequences,
+          nextCadenceRecords, nextPartOwners, nextGeneration);
       }
       return result(true, parts, baseline, nextEvents, nextGeneration, null, dryRun);
     }
@@ -752,10 +1114,13 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     function applyStop(message, dryRun) {
       var key;
       var nextEvents = events;
+      var nextPartOwners = partOwners;
+      var copiedOwners = {};
       var parts = [];
       var requestedParts = targetParts(message.targets);
       var eventEntries;
       var keptEntries;
+      var removedEntries;
       var entryChanged;
       var index;
       var changed = false;
@@ -764,10 +1129,12 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       function retainRequested(entries) {
         var retained = [];
         var retainedIndex;
+        removedEntries = [];
         entryChanged = false;
         for (retainedIndex = 0; retainedIndex < entries.length; retainedIndex += 1) {
           if (requestedParts.indexOf(entries[retainedIndex].target.part) !== -1) {
             addPart(parts, entries[retainedIndex].target.part);
+            removedEntries.push(entries[retainedIndex]);
             entryChanged = true;
           } else {
             retained.push(entries[retainedIndex]);
@@ -782,18 +1149,24 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
           eventEntries = events[key];
           if (requestedParts.length === 0) {
             nextEvents = copyOwnMap(events);
+            nextPartOwners = copyOwnMap(partOwners);
             addEntryParts(parts, eventEntries);
             delete nextEvents[key];
+            removeEntryOwnership(nextPartOwners, copiedOwners, key,
+              eventEntries, []);
             changed = true;
           } else {
             keptEntries = retainRequested(eventEntries);
             if (entryChanged) {
               nextEvents = copyOwnMap(events);
+              nextPartOwners = copyOwnMap(partOwners);
               if (keptEntries.length === 0) {
                 delete nextEvents[key];
               } else {
                 nextEvents[key] = keptEntries;
               }
+              removeEntryOwnership(nextPartOwners, copiedOwners, key,
+                removedEntries, keptEntries);
               changed = true;
             }
           }
@@ -807,12 +1180,15 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
               if (entryChanged) {
                 if (!changed) {
                   nextEvents = copyOwnMap(events);
+                  nextPartOwners = copyOwnMap(partOwners);
                 }
                 if (keptEntries.length === 0) {
                   delete nextEvents[key];
                 } else {
                   nextEvents[key] = keptEntries;
                 }
+                removeEntryOwnership(nextPartOwners, copiedOwners, key,
+                  removedEntries, keptEntries);
                 changed = true;
               }
             }
@@ -821,7 +1197,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       }
       nextGeneration = changed ? generation + 1 : generation;
       if (changed && !dryRun) {
-        publish(baseline, nextEvents, baselineSequences, nextGeneration);
+        publish(baseline, nextEvents, baselineSequences,
+          cadenceRecords, nextPartOwners, nextGeneration);
       }
       return result(changed, parts, baseline, nextEvents, nextGeneration, null, dryRun);
     }
@@ -864,7 +1241,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       }
       nextGeneration = changed ? generation + 1 : generation;
       if (!dryRun) {
-        publish(nextBaseline, events, nextSequences, nextGeneration);
+        publish(nextBaseline, events, nextSequences,
+          cadenceRecords, partOwners, nextGeneration);
       }
       return result(changed, parts, nextBaseline, events, nextGeneration, null, dryRun);
     }
@@ -887,6 +1265,12 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     engine.snapshot = function () {
       return snapshot(baseline, events, generation);
     };
+    engine.hapticSnapshot = function () {
+      return copy({
+        cadenceRecords: cadenceRecords,
+        partOwners: partOwners
+      });
+    };
     engine.readState = function () {
       /* Internal read-only view. Callers must never mutate retained maps or entries. */
       return { baseline: baseline, events: events, generation: generation };
@@ -906,7 +1290,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         }
       }
       if (!dryRun) {
-        publish({}, {}, baselineSequences, nextGeneration);
+        publish({}, {}, baselineSequences, {}, {}, nextGeneration);
       }
       return result(true, parts, {}, {}, nextGeneration, null, dryRun === true);
     };
@@ -930,10 +1314,14 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     };
     engine.expire = function (nowMs, dryRun) {
       var nextEvents;
+      var nextPartOwners;
+      var nextCadenceRecords;
+      var copiedOwners = {};
       var key;
       var index;
       var entries;
       var keptEntries;
+      var removedEntries;
       var entryChanged;
       var parts = [];
       var changed = false;
@@ -954,10 +1342,18 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         }
       }
       if (!changed) {
+        nextCadenceRecords = cleanQuietCadence(
+          cadenceRecords, nowMs
+        );
+        if (nextCadenceRecords !== cadenceRecords && dryRun !== true) {
+          publish(baseline, events, baselineSequences,
+            nextCadenceRecords, partOwners, generation);
+        }
         return result(false, [], baseline, events, generation, null, dryRun === true);
       }
 
       nextEvents = copyOwnMap(events);
+      nextPartOwners = copyOwnMap(partOwners);
       for (key in events) {
         if (hasOwn.call(events, key)) {
           entries = events[key];
@@ -970,9 +1366,11 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
           }
           if (entryChanged) {
             keptEntries = [];
+            removedEntries = [];
             for (index = 0; index < entries.length; index += 1) {
               if (entries[index].expiresAt <= nowMs) {
                 addPart(parts, entries[index].target.part);
+                removedEntries.push(entries[index]);
               } else {
                 keptEntries.push(entries[index]);
               }
@@ -982,16 +1380,93 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
             } else {
               nextEvents[key] = keptEntries;
             }
+            removeEntryOwnership(nextPartOwners, copiedOwners, key,
+              removedEntries, keptEntries);
           }
         }
       }
+      nextCadenceRecords = cleanQuietCadence(
+        cadenceRecords, nowMs
+      );
       nextGeneration = generation + 1;
       if (dryRun !== true) {
-        publish(baseline, nextEvents, baselineSequences, nextGeneration);
+        publish(baseline, nextEvents, baselineSequences,
+          nextCadenceRecords, nextPartOwners, nextGeneration);
       }
       return result(true, parts, baseline, nextEvents, nextGeneration, null, dryRun === true);
     };
     return engine;
+  };
+}(XTHB));
+(function (ns) {
+  ns.MODULE_HAPTICS = true;
+
+  ns.nextCadence = function (previous, target, nowMs, generation) {
+    var interval;
+    var average;
+    var mode = 'single';
+    var textureStartedAt = null;
+    if (previous !== null && nowMs - previous.lastAttackAt < target.retrigger.quietResetMs) {
+      interval = nowMs - previous.lastAttackAt;
+      average = previous.averageInterval === null
+        ? interval
+        : previous.averageInterval * 0.75 + interval * 0.25;
+      mode = average < target.retrigger.textureThresholdMs ? 'texture' : 'adaptive';
+      textureStartedAt = mode === 'texture'
+        ? (previous.mode === 'texture' ? previous.textureStartedAt : nowMs)
+        : null;
+    } else {
+      average = null;
+    }
+    return {
+      lastAttackAt: nowMs,
+      averageInterval: average,
+      mode: mode,
+      lastGeneration: generation,
+      textureStartedAt: textureStartedAt,
+      quietResetMs: target.retrigger.quietResetMs
+    };
+  };
+
+  ns.envelopePlan = function (target, cadence) {
+    var profile = target.retrigger;
+    var ratio = cadence.averageInterval === null ? 1 : ns.clamp(
+      (cadence.averageInterval - profile.textureThresholdMs) /
+        (profile.quietResetMs - profile.textureThresholdMs), 0, 1);
+    var desiredFall = profile.minRampDownMs +
+      (target.rampDownMs - profile.minRampDownMs) * ratio;
+    var desiredRise = profile.minRampUpMs +
+      (target.rampUpMs - profile.minRampUpMs) * ratio;
+    var minimumTotal = profile.minRampDownMs + profile.minRampUpMs;
+    var available = target.durationMs - ns.SCHEDULER_INTERVAL_MS;
+    var desiredTotal = desiredFall + desiredRise;
+    var fit;
+    if (desiredTotal > available && desiredTotal > minimumTotal) {
+      fit = (available - minimumTotal) / (desiredTotal - minimumTotal);
+      desiredFall = profile.minRampDownMs +
+        (desiredFall - profile.minRampDownMs) * fit;
+      desiredRise = profile.minRampUpMs +
+        (desiredRise - profile.minRampUpMs) * fit;
+    }
+    return {
+      mode: cadence.mode,
+      dropPercent: profile.minDropPercent +
+        (profile.maxDropPercent - profile.minDropPercent) * ratio,
+      fallMs: desiredFall,
+      riseMs: desiredRise
+    };
+  };
+
+  ns.hapticFloor = function (baselineValue, targetValue, blend, dropPercent) {
+    var anchor = blend === 'replace' ? 0 : baselineValue;
+    return ns.clamp(anchor + (targetValue - anchor) *
+      (1 - dropPercent / 100), 0, 100);
+  };
+
+  ns.textureTargetPhase = function (cadence, nowMs) {
+    var period = Math.max(200, 2 * cadence.averageInterval);
+    var elapsed = nowMs - cadence.textureStartedAt;
+    return elapsed < 0 || elapsed % period < period / 2;
   };
 }(XTHB));
 (function (ns) {
@@ -1088,6 +1563,19 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return next.identity < current.identity;
   }
 
+  function newerForeground(next, current) {
+    if (current === null) {
+      return true;
+    }
+    if (next.entry.acceptedAt !== current.entry.acceptedAt) {
+      return next.entry.acceptedAt > current.entry.acceptedAt;
+    }
+    if (next.entry.generation !== current.entry.generation) {
+      return next.entry.generation > current.entry.generation;
+    }
+    return next.identity < current.identity;
+  }
+
   function pulseIsOn(entry, nowMs) {
     var target = entry.target;
     var elapsed;
@@ -1109,16 +1597,93 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return elapsed % period < target.pulseOnMs;
   }
 
+  function retriggerMetadata(retrigger) {
+    if (retrigger === null) {
+      return null;
+    }
+    return {
+      mode: retrigger.mode,
+      minDropPercent: retrigger.minDropPercent,
+      maxDropPercent: retrigger.maxDropPercent,
+      minRampUpMs: retrigger.minRampUpMs,
+      minRampDownMs: retrigger.minRampDownMs,
+      textureThresholdMs: retrigger.textureThresholdMs,
+      quietResetMs: retrigger.quietResetMs
+    };
+  }
+
+  function targetMetadata(target) {
+    return {
+      part: target.part,
+      effect: target.effect,
+      intensity: target.intensity,
+      hasIntensity: target.hasIntensity,
+      frequency: target.frequency,
+      hasFrequency: target.hasFrequency,
+      rotateSpeed: target.rotateSpeed,
+      hasRotateSpeed: target.hasRotateSpeed,
+      rotateDirection: target.rotateDirection,
+      durationMs: target.durationMs,
+      rampUpMs: target.rampUpMs,
+      rampDownMs: target.rampDownMs,
+      pulseOnMs: target.pulseOnMs,
+      pulseOffMs: target.pulseOffMs,
+      priority: target.priority,
+      blend: target.blend,
+      baselineBlend: target.baselineBlend,
+      retrigger: retriggerMetadata(target.retrigger)
+    };
+  }
+
+  function cadenceMetadata(cadence) {
+    if (cadence === null) {
+      return null;
+    }
+    return {
+      lastAttackAt: cadence.lastAttackAt,
+      averageInterval: cadence.averageInterval,
+      mode: cadence.mode,
+      lastGeneration: cadence.lastGeneration,
+      textureStartedAt: cadence.textureStartedAt,
+      quietResetMs: cadence.quietResetMs
+    };
+  }
+
   function winnerMetadata(winner) {
+    var entry;
+    var metadata;
     if (winner === null) {
       return null;
     }
-    return ns.copyObject(winner.entry);
+    entry = winner.entry;
+    metadata = {
+      source: entry.source,
+      sequence: entry.sequence,
+      target: targetMetadata(entry.target)
+    };
+    if (hasOwn.call(entry, 'eventId')) {
+      metadata.eventId = entry.eventId;
+    }
+    if (hasOwn.call(entry, 'acceptedAt')) {
+      metadata.acceptedAt = entry.acceptedAt;
+    }
+    if (hasOwn.call(entry, 'expiresAt')) {
+      metadata.expiresAt = entry.expiresAt;
+    }
+    if (hasOwn.call(entry, 'generation')) {
+      metadata.generation = entry.generation;
+    }
+    if (hasOwn.call(entry, 'cadence')) {
+      metadata.cadence = cadenceMetadata(entry.cadence);
+    }
+    return metadata;
   }
 
   function outputForSlot(slot, snapshot, nowMs) {
     var baselineWinner = null;
-    var transientWinner = null;
+    var ordinaryTransientWinner = null;
+    var foregroundWinner = null;
+    var transientWinner;
     var baselineEntries = ownValues(snapshot.baseline || {});
     var eventLists = ownValues(snapshot.events || {});
     var listIndex;
@@ -1135,6 +1700,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var value = 0;
     var direction = null;
     var frequency = 0;
+    var baselineValue = 0;
+    var baselineFrequency = 0;
+    var baselineDirection = null;
     var rampUpMs = 0;
     var rampDownMs = 0;
     var pulseOnMs = 0;
@@ -1170,8 +1738,11 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
               if (routeWeight !== undefined) {
                 next = candidate(entry, slot.type, routeWeight, part.weight, snapshot.config.globalMultiplier,
                   contributionIdentity(entry, 'transient', part.part));
-                if (newerTransient(next, transientWinner)) {
-                  transientWinner = next;
+                if (newerTransient(next, ordinaryTransientWinner)) {
+                  ordinaryTransientWinner = next;
+                }
+                if (entry.target.retrigger !== null && newerForeground(next, foregroundWinner)) {
+                  foregroundWinner = next;
                 }
               }
             }
@@ -1180,6 +1751,15 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       }
     }
 
+    transientWinner = foregroundWinner === null ? ordinaryTransientWinner : foregroundWinner;
+    if (baselineWinner !== null) {
+      baselineValue = baselineWinner.effectiveValue;
+      baselineFrequency = slot.frequencyEnabled
+        ? baselineWinner.entry.target.frequency : 0;
+      if (slot.type === 'rotation') {
+        baselineDirection = baselineWinner.entry.target.rotateDirection;
+      }
+    }
     activeTransient = transientWinner !== null && pulseIsOn(transientWinner.entry, nowMs);
     if (baselineWinner !== null && activeTransient) {
       value = ns.mixValue(baselineWinner.effectiveValue, transientWinner.effectiveValue,
@@ -1219,7 +1799,11 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       pulseOnMs: pulseOnMs,
       pulseOffMs: pulseOffMs,
       baselineWinner: winnerMetadata(baselineWinner),
+      foregroundWinner: winnerMetadata(foregroundWinner),
       transientWinner: winnerMetadata(transientWinner),
+      baselineValue: baselineValue,
+      baselineFrequency: baselineFrequency,
+      baselineDirection: baselineDirection,
       generation: snapshot.generation
     };
   }
@@ -1256,6 +1840,52 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return ns.copyObject(value);
   }
 
+  function copyTransition(transition) {
+    return { rampSeconds: transition.rampSeconds };
+  }
+
+  function copyTuple(tuple) {
+    return {
+      value: tuple.value,
+      frequency: tuple.frequency,
+      direction: tuple.direction,
+      rampSeconds: tuple.rampSeconds
+    };
+  }
+
+  function copySlot(slot) {
+    /* Winner metadata is a fixed scalar projection owned by this dispatch pass. */
+    return {
+      id: slot.id,
+      enabled: slot.enabled,
+      type: slot.type,
+      value: slot.value,
+      frequency: slot.frequency,
+      direction: slot.direction,
+      rampUpMs: slot.rampUpMs,
+      rampDownMs: slot.rampDownMs,
+      pulseOnMs: slot.pulseOnMs,
+      pulseOffMs: slot.pulseOffMs,
+      baselineWinner: slot.baselineWinner,
+      foregroundWinner: slot.foregroundWinner,
+      transientWinner: slot.transientWinner,
+      baselineValue: slot.baselineValue,
+      baselineFrequency: slot.baselineFrequency,
+      baselineDirection: slot.baselineDirection,
+      generation: slot.generation
+    };
+  }
+
+  function actuatorSlot(slot) {
+    /* The adapter receives only the primitive actuator tuple it owns. */
+    return {
+      id: slot.id,
+      value: slot.value,
+      frequency: slot.frequency,
+      direction: slot.direction
+    };
+  }
+
   function normalizedDirection(value) {
     return value === undefined ? null : value;
   }
@@ -1264,8 +1894,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return {
       value: slot.value,
       frequency: slot.frequency,
-      direction: normalizedDirection(slot.direction),
-      generation: slot.generation
+      direction: normalizedDirection(slot.direction)
     };
   }
 
@@ -1302,11 +1931,24 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       !sameWinner(previous.transientWinner, current.transientWinner);
   }
 
-  function rampSeconds(previous, current, previousTuple, expiredParts) {
+  function replacementRampSeconds(previous, current, winnerChanged, effectiveRiseMs) {
+    if (current.type === 'rotation' && winnerChanged && current.value > 0) {
+      return ns.clamp(effectiveRiseMs / 1000, 0, 600);
+    }
+    return null;
+  }
+
+  function rampSeconds(previous, current, previousTuple, expiredParts,
+      winnerChanged, effectiveRiseMs) {
     var previousValue = previous === undefined ? 0 : previous.value;
     var milliseconds = 0;
     var currentCore = coreTuple(current);
+    var replacement = replacementRampSeconds(previous, current,
+      winnerChanged, effectiveRiseMs);
 
+    if (replacement !== null) {
+      return replacement;
+    }
     if (sameActuator(previousTuple, currentCore)) {
       return previousTuple.rampSeconds;
     }
@@ -1328,9 +1970,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var engine;
     var lastSlots = {};
     var lastTuples = {};
-    var pendingDispatches = {};
-    var generationFloors = {};
-    var recentFailures = [];
+    var slotEnvelopes = {};
     var runtime = {};
 
     if (!validation.ok) {
@@ -1342,70 +1982,264 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     normalizedConfig = validation.config;
     engine = ns.createStateEngine();
 
-    function apply(slot, transition, force) {
-      var tuple = coreTuple(slot);
-      var physicalSlot = copy(slot);
-      var failure;
-      tuple.rampSeconds = transition.rampSeconds;
-      if (!force && pendingDispatches[slot.id] === undefined && sameTuple(lastTuples[slot.id], tuple)) {
-        lastSlots[slot.id] = copy(slot);
-        return { changed: false, failure: null };
-      }
-      if (generationFloors[slot.id] === undefined) {
-        generationFloors[slot.id] = physicalSlot.generation;
-      } else {
-        physicalSlot.generation = Math.max(physicalSlot.generation, generationFloors[slot.id] + 1);
-        generationFloors[slot.id] = physicalSlot.generation;
-      }
-      tuple.generation = physicalSlot.generation;
-      try {
-        outputAdapter.applySlot(physicalSlot, copy(transition));
-      } catch (error) {
-        failure = {
-          slotId: slot.id,
-          code: 'adapter_apply_failed',
-          detail: error && error.message !== undefined ? String(error.message) : String(error)
-        };
-        pendingDispatches[slot.id] = {
-          tuple: copy(tuple),
-          transition: copy(transition)
-        };
-        return { changed: false, failure: failure };
-      }
-      lastTuples[slot.id] = copy(tuple);
-      lastSlots[slot.id] = copy(slot);
-      delete pendingDispatches[slot.id];
-      return { changed: true, failure: null };
-    }
-
-    function transitionFor(slot, expiredParts) {
-      var pending = pendingDispatches[slot.id];
-      if (pending !== undefined && sameActuator(pending.tuple, coreTuple(slot))) {
-        return copy(pending.transition);
-      }
-      return {
-        rampSeconds: rampSeconds(lastSlots[slot.id], slot, lastTuples[slot.id], expiredParts)
-      };
-    }
-
-    function dispatchResult(changedSlots, failures) {
-      return { changedSlots: changedSlots, failures: failures };
-    }
-
-    function reportFailures(failures) {
-      var index;
-      var logEntry;
-      recentFailures = copy(failures);
+    function reportCallError(slotId, error) {
       if (typeof outputAdapter.log !== 'function') {
         return;
       }
-      for (index = 0; index < failures.length; index += 1) {
-        logEntry = copy(failures[index]);
-        logEntry.type = 'dispatch_error';
-        try {
-          outputAdapter.log(logEntry);
-        } catch (ignored) {
-          /* Logging cannot prevent best-effort physical dispatch progress. */
+      try {
+        outputAdapter.log({
+          type: 'xtoys_call_error',
+          slotId: slotId,
+          detail: error && error.message !== undefined ? String(error.message) : String(error)
+        });
+      } catch (ignored) {
+        /* Logging cannot block another output slot. */
+      }
+    }
+
+    function apply(slot, transition, force) {
+      var tuple = coreTuple(slot);
+      tuple.rampSeconds = transition.rampSeconds;
+      if (!force && sameTuple(lastTuples[slot.id], tuple)) {
+        lastSlots[slot.id] = copySlot(slot);
+        return { changed: false, completed: true };
+      }
+      try {
+        outputAdapter.applySlot(actuatorSlot(slot), copyTransition(transition));
+      } catch (error) {
+        lastSlots[slot.id] = copySlot(slot);
+        delete lastTuples[slot.id];
+        reportCallError(slot.id, error);
+        return { changed: false, completed: false };
+      }
+      lastTuples[slot.id] = copyTuple(tuple);
+      lastSlots[slot.id] = copySlot(slot);
+      return { changed: true, completed: true };
+    }
+
+    function transitionFor(slot, expiredParts) {
+      var previous = lastSlots[slot.id];
+      var winnerChanged = resolvedWinnerKey(previous) !== resolvedWinnerKey(slot);
+      return {
+        rampSeconds: rampSeconds(previous, slot, lastTuples[slot.id],
+          expiredParts, winnerChanged, slot.rampUpMs)
+      };
+    }
+
+    function foregroundKey(slot) {
+      var winner = slot.foregroundWinner;
+      return winner === null ? null : ns.compositeKey([
+        winner.source, winner.eventId, winner.target.part, winner.generation
+      ]);
+    }
+
+    function resolvedWinnerKey(slot) {
+      if (slot === undefined) {
+        return null;
+      }
+      var kind = slot.transientWinner === null ? 'baseline' : 'transient';
+      var winner = slot.transientWinner === null
+        ? slot.baselineWinner : slot.transientWinner;
+      if (winner === null) {
+        return null;
+      }
+      return ns.compositeKey([
+        kind, winner.source || '', winner.eventId || '', winner.target.part,
+        winner.sequence === undefined ? '' : winner.sequence,
+        winner.generation === undefined ? '' : winner.generation
+      ]);
+    }
+
+    function restoresOlderForeground(previous, winner) {
+      var previousWinner = previous === undefined
+        ? null : previous.foregroundWinner;
+      return previousWinner !== null && !sameWinner(previousWinner, winner) &&
+        winner.generation < previousWinner.generation;
+    }
+
+    function restoredRiseMs(winner, plan, atMs) {
+      var remaining = Math.max(0, winner.expiresAt - atMs);
+      return Math.min(plan.riseMs,
+        Math.max(0, remaining - ns.SCHEDULER_INTERVAL_MS));
+    }
+
+    function prepareHapticSlot(slot, atMs) {
+      var key = foregroundKey(slot);
+      var envelope = slotEnvelopes[slot.id];
+      var previous = lastSlots[slot.id];
+      var winner = slot.foregroundWinner;
+      var winnerChanged = resolvedWinnerKey(previous) !== resolvedWinnerKey(slot);
+      var effectiveRiseMs;
+      var plan;
+      var physical;
+      var targetPhase;
+      var transition;
+      var restored;
+
+      if (key === null) {
+        delete slotEnvelopes[slot.id];
+        return { slot: slot, transition: null, token: null };
+      }
+
+      if (envelope === undefined || envelope.ownerKey !== key) {
+        plan = ns.envelopePlan(winner.target, winner.cadence);
+        restored = restoresOlderForeground(previous, winner);
+        effectiveRiseMs = restored
+          ? restoredRiseMs(winner, plan, atMs) : plan.riseMs;
+        envelope = {
+          ownerKey: key,
+          ownerGeneration: winner.generation,
+          phase: 'rise',
+          riseAt: atMs,
+          floorApplied: true,
+          dropPercent: plan.dropPercent,
+          fallMs: plan.fallMs,
+          riseMs: effectiveRiseMs,
+          textureStartedAt: winner.cadence.mode === 'texture'
+            ? winner.cadence.textureStartedAt : null,
+          restoredOwner: restored
+        };
+        slotEnvelopes[slot.id] = envelope;
+        transition = replacementRampSeconds(previous, slot, winnerChanged,
+          effectiveRiseMs);
+        if (transition !== null) {
+          return {
+            slot: slot,
+            transition: { rampSeconds: transition },
+            token: {
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'target'
+            }
+          };
+        }
+        if (restored) {
+          return {
+            slot: slot,
+            transition: { rampSeconds: envelope.riseMs / 1000 },
+            token: {
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'target'
+            }
+          };
+        }
+        if (winner.cadence.mode === 'texture') {
+          envelope.phase = 'texture';
+        } else if (previous === undefined ||
+            (previous.transientWinner === null &&
+              previous.value === slot.baselineValue)) {
+          return {
+            slot: slot,
+            transition: { rampSeconds: envelope.riseMs / 1000 },
+            token: {
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'target'
+            }
+          };
+        } else {
+          physical = copySlot(slot);
+          physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+            winner.target.baselineBlend, plan.dropPercent);
+          physical.frequency = slot.baselineFrequency;
+          envelope.phase = 'fall';
+          envelope.riseAt = null;
+          envelope.floorApplied = false;
+          return {
+            slot: physical,
+            transition: { rampSeconds: envelope.fallMs / 1000 },
+            token: {
+              slotId: slot.id,
+              ownerKey: key,
+              ownerGeneration: envelope.ownerGeneration,
+              phase: 'fall'
+            }
+          };
+        }
+      }
+
+      if (winner !== null && winner.cadence.mode === 'texture' &&
+          !(envelope.phase === 'fall' &&
+            (!envelope.floorApplied || atMs < envelope.riseAt))) {
+        envelope.textureStartedAt = winner.cadence.textureStartedAt;
+        targetPhase = ns.textureTargetPhase(winner.cadence, atMs);
+        physical = copySlot(slot);
+        if (!targetPhase) {
+          physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+            winner.target.baselineBlend,
+            winner.target.retrigger.minDropPercent);
+          physical.frequency = slot.baselineFrequency;
+        }
+        transition = {
+          rampSeconds: (targetPhase
+            ? winner.target.retrigger.minRampUpMs
+            : winner.target.retrigger.minRampDownMs) / 1000
+        };
+        return {
+          slot: physical,
+          transition: transition,
+          token: {
+            slotId: slot.id,
+            ownerKey: key,
+            ownerGeneration: envelope.ownerGeneration,
+            phase: targetPhase ? 'target' : 'floor'
+          }
+        };
+      }
+      if (envelope.phase === 'fall' && envelope.floorApplied &&
+          atMs >= envelope.riseAt) {
+        return {
+          slot: slot,
+          transition: { rampSeconds: envelope.riseMs / 1000 },
+          token: {
+            slotId: slot.id,
+            ownerKey: key,
+            ownerGeneration: envelope.ownerGeneration,
+            phase: 'target'
+          }
+        };
+      }
+      if (envelope.phase === 'fall') {
+        physical = copySlot(slot);
+        physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+          winner.target.baselineBlend, envelope.dropPercent);
+        physical.frequency = slot.baselineFrequency;
+        return {
+          slot: physical,
+          transition: { rampSeconds: envelope.fallMs / 1000 },
+          token: {
+            slotId: slot.id,
+            ownerKey: key,
+            ownerGeneration: envelope.ownerGeneration,
+            phase: 'fall'
+          }
+        };
+      }
+      return {
+        slot: slot,
+        transition: { rampSeconds: envelope.riseMs / 1000 },
+        token: {
+          slotId: slot.id,
+          ownerKey: key,
+          ownerGeneration: envelope.ownerGeneration,
+          phase: 'target'
+        }
+      };
+    }
+
+    function completeHapticPhase(token, atMs) {
+      var envelope = slotEnvelopes[token.slotId];
+      if (envelope !== undefined && envelope.ownerKey === token.ownerKey &&
+          envelope.ownerGeneration === token.ownerGeneration) {
+        if (token.phase === 'fall' && !envelope.floorApplied) {
+          envelope.floorApplied = true;
+          envelope.riseAt = atMs + envelope.fallMs;
+        } else if (token.phase === 'target' || token.phase === 'floor') {
+          envelope.phase = token.phase;
         }
       }
     }
@@ -1414,24 +2248,27 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var slots = ns.computeSlots(engine.readState(), normalizedConfig, atMs);
       var index;
       var slot;
+      var prepared;
       var transition;
       var applied;
       var changed = 0;
-      var failures = [];
       for (index = 0; index < slots.length; index += 1) {
         slot = slots[index];
         if (slot.enabled) {
-          transition = transitionFor(slot, expiredParts);
-          applied = apply(slot, transition, false);
+          prepared = prepareHapticSlot(slot, atMs);
+          transition = prepared.transition === null
+            ? transitionFor(prepared.slot, expiredParts)
+            : prepared.transition;
+          applied = apply(prepared.slot, transition, false);
+          if (applied.completed && prepared.token !== null) {
+            completeHapticPhase(prepared.token, atMs);
+          }
           if (applied.changed) {
             changed += 1;
           }
-          if (applied.failure !== null) {
-            failures.push(applied.failure);
-          }
         }
       }
-      return dispatchResult(changed, failures);
+      return { changedSlots: changed };
     }
 
     function preview(message, atMs) {
@@ -1466,8 +2303,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         stopped = runtime.stopAll();
         return {
           ok: true,
-          changedSlots: stopped,
-          dispatchFailures: copy(recentFailures)
+          changedSlots: stopped
         };
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
@@ -1483,17 +2319,14 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         return {
           ok: true,
           changed: false,
-          changedSlots: 0,
-          dispatchFailures: []
+          changedSlots: 0
         };
       }
       dispatched = dispatch(atMs, expired.changedParts);
-      reportFailures(dispatched.failures);
       return {
         ok: true,
         changed: applied.changed || expired.changed,
-        changedSlots: dispatched.changedSlots,
-        dispatchFailures: copy(dispatched.failures)
+        changedSlots: dispatched.changedSlots
       };
     };
 
@@ -1501,7 +2334,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var atMs = now();
       var expired = engine.expire(atMs, false);
       var dispatched = dispatch(atMs, expired.changedParts);
-      reportFailures(dispatched.failures);
       return dispatched.changedSlots;
     };
 
@@ -1512,7 +2344,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var index;
       var applied;
       var changed = 0;
-      var failures = [];
+      slotEnvelopes = {};
       engine.clearAll(false);
       slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
       for (index = 0; index < slots.length; index += 1) {
@@ -1525,12 +2357,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
           if (applied.changed) {
             changed += 1;
           }
-          if (applied.failure !== null) {
-            failures.push(applied.failure);
-          }
         }
       }
-      reportFailures(failures);
       return changed;
     };
 
@@ -1538,8 +2366,13 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       return engine.snapshot();
     };
 
-    runtime.recentFailures = function () {
-      return copy(recentFailures);
+    runtime.hapticSnapshot = function () {
+      var logical = engine.hapticSnapshot();
+      return {
+        cadenceRecords: copy(logical.cadenceRecords),
+        partOwners: copy(logical.partOwners),
+        slotEnvelopes: copy(slotEnvelopes)
+      };
     };
 
     runtime.invalidateSlot = function (slotId) {
@@ -1547,35 +2380,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         throw new Error('Runtime slot ID must be an integer from 1 through 16.');
       }
       delete lastTuples[slotId];
-    };
-
-    runtime.reserveSlotGeneration = function (slotId) {
-      var generation = 0;
-      if (typeof slotId !== 'number' || !isFinite(slotId) || slotId % 1 !== 0 || slotId < 1 || slotId > 16) {
-        throw new Error('Runtime slot ID must be an integer from 1 through 16.');
-      }
-      if (generationFloors[slotId] !== undefined) {
-        generation = Math.max(generation, generationFloors[slotId]);
-      }
-      if (lastTuples[slotId] !== undefined) {
-        generation = Math.max(generation, lastTuples[slotId].generation);
-      }
-      if (pendingDispatches[slotId] !== undefined) {
-        generation = Math.max(generation, pendingDispatches[slotId].tuple.generation);
-      }
-      if (lastSlots[slotId] !== undefined) {
-        generation = Math.max(generation, lastSlots[slotId].generation);
-      }
-      generation += 1;
-      generationFloors[slotId] = generation;
-      delete lastTuples[slotId];
-      return generation;
-    };
-
-    runtime.forceResync = function () {
-      lastTuples = {};
-      pendingDispatches = {};
-      return runtime.tick();
     };
 
     return runtime;
@@ -1619,7 +2423,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
   ns.createXToysAdapter = function (logLevel) {
     var level = logLevel === 'off' || logLevel === 'debug' ? logLevel : 'errors';
-    var successfulApplies = 0;
+    var completedCalls = 0;
     var adapter = {
       applySlot: function (slot, transition) {
         var suffix = slotSuffix(slot.id);
@@ -1627,12 +2431,11 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         setVariable('xthb-slot-' + suffix + '-frequency', slot.frequency);
         setVariable('xthb-slot-' + suffix + '-ramp-seconds', transition.rampSeconds);
         setVariable('xthb-slot-' + suffix + '-direction-code', directionCode(slot.direction));
-        setVariable('xthb-slot-' + suffix + '-generation', slot.generation);
         callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' });
-        successfulApplies += 1;
-        if (level === 'debug' && successfulApplies >= 100) {
-          safeConsoleLog('XTHB debug: ' + successfulApplies + ' successful slot updates.');
-          successfulApplies = 0;
+        completedCalls += 1;
+        if (level === 'debug' && completedCalls >= 100) {
+          safeConsoleLog('XTHB debug: 100 XToys slot calls completed without exception.');
+          completedCalls = 0;
         }
       },
       log: function (entry) {
@@ -1651,15 +2454,12 @@ var xtoysBridgeInit;
 var xtoysBridgeHandle;
 var xtoysBridgeTick;
 var xtoysBridgeStopAll;
-var xtoysBridgeReloadConfig;
 var xtoysBridgeTestSlot;
 
 (function (ns) {
   var runtime = null;
   var adapter = null;
   var config = null;
-  var stopped = true;
-  var stopRetryPending = false;
 
   ns.MODULE_GLOBAL_ENTRY = true;
 
@@ -1677,9 +2477,12 @@ var xtoysBridgeTestSlot;
     return error && error.message !== undefined ? String(error.message) : String(error);
   }
 
-  function reportError(type, error, targetAdapter) {
+  function reportError(type, error, targetAdapter, slotId) {
     var outputAdapter = targetAdapter || adapter;
     var entry = { type: type, detail: errorDetail(error) };
+    if (slotId !== undefined) {
+      entry.slotId = slotId;
+    }
     if (outputAdapter !== null && typeof outputAdapter.log === 'function') {
       try {
         outputAdapter.log(entry);
@@ -1716,24 +2519,6 @@ var xtoysBridgeTestSlot;
     };
   }
 
-  function zeroSlot(outputAdapter, slotId, generation) {
-    outputAdapter.applySlot({
-      id: slotId,
-      value: 0,
-      frequency: 0,
-      direction: null,
-      generation: generation
-    }, { rampSeconds: 0 });
-  }
-
-  function enabledSlot(configuration, slotId) {
-    return configuration !== null && configuration.slots[slotId - 1].enabled;
-  }
-
-  function hasRecentFailures(targetRuntime) {
-    return targetRuntime.recentFailures().length > 0;
-  }
-
   function finiteNumber(value) {
     var numeric;
     if (typeof value === 'number') {
@@ -1746,83 +2531,45 @@ var xtoysBridgeTestSlot;
     return isFinite(numeric) ? { ok: true, value: numeric } : { ok: false };
   }
 
-  function installCandidate(candidate) {
-    var slotId;
-    if (config !== null) {
-      for (slotId = 1; slotId <= 16; slotId += 1) {
-        if (enabledSlot(config, slotId) && !enabledSlot(candidate.config, slotId)) {
-          zeroSlot(candidate.adapter, slotId, 0);
-        }
-      }
+  function manualDirection(slot, value, direction) {
+    if (slot.type !== 'rotation') {
+      return { ok: true, value: null };
     }
-    candidate.runtime.stopAll();
-    runtime = candidate.runtime;
-    adapter = candidate.adapter;
-    config = candidate.config;
-    stopRetryPending = hasRecentFailures(runtime);
-    stopped = !stopRetryPending;
-  }
-
-  function restoreActiveRuntime(wasStopped, wasStopRetryPending) {
-    if (runtime === null) {
-      return;
+    if (value === 0 && (direction === undefined || direction === null || direction === '')) {
+      return { ok: true, value: null };
     }
-    try {
-      runtime.forceResync();
-      if (hasRecentFailures(runtime)) {
-        stopped = false;
-        stopRetryPending = wasStopped || wasStopRetryPending;
-      } else {
-        stopped = wasStopped || wasStopRetryPending;
-        stopRetryPending = false;
-      }
-    } catch (error) {
-      stopped = false;
-      stopRetryPending = false;
-      reportError('runtime_error', error, adapter);
+    if (direction === 'clockwise' || direction === 'counterclockwise') {
+      return { ok: true, value: direction };
     }
-  }
-
-  function initialize() {
-    var candidate;
-    var wasStopped = stopped;
-    var wasStopRetryPending = stopRetryPending;
-    try {
-      candidate = readCandidate();
-      installCandidate(candidate);
-      return 1;
-    } catch (error) {
-      if (candidate !== undefined) {
-        restoreActiveRuntime(wasStopped, wasStopRetryPending);
-      }
-      reportError('config_error', error, candidate === undefined ? null : candidate.adapter);
-      return 0;
-    }
+    return { ok: false, value: null };
   }
 
   xtoysBridgeInit = function () {
-    return initialize();
+    var candidate;
+    try {
+      candidate = readCandidate();
+      candidate.runtime.stopAll();
+      runtime = candidate.runtime;
+      adapter = candidate.adapter;
+      config = candidate.config;
+      return 1;
+    } catch (error) {
+      reportError('config_error', error,
+        candidate === undefined ? null : candidate.adapter);
+      return 0;
+    }
   };
 
   xtoysBridgeHandle = function (payloadText) {
     var result;
     if (runtime === null) {
-      return 1;
+      return 0;
     }
     try {
       result = runtime.handle(payloadText);
       if (!result.ok) {
         adapter.log({ type: 'input_error', code: result.code, detail: result.detail });
         return 0;
-      }
-      if (result.preview === undefined) {
-        if (result.changed === undefined && result.dispatchFailures !== undefined) {
-          stopRetryPending = result.dispatchFailures.length > 0;
-          stopped = !stopRetryPending;
-        } else if (result.changed === true || result.changedSlots > 0) {
-          stopped = false;
-          stopRetryPending = false;
-        }
       }
       return 1;
     } catch (error) {
@@ -1832,17 +2579,11 @@ var xtoysBridgeTestSlot;
   };
 
   xtoysBridgeTick = function () {
-    var changed;
     if (runtime === null) {
       return 0;
     }
     try {
-      changed = runtime.tick();
-      if (stopRetryPending) {
-        stopRetryPending = hasRecentFailures(runtime);
-        stopped = !stopRetryPending;
-      }
-      return changed;
+      return runtime.tick();
     } catch (error) {
       reportError('runtime_error', error, adapter);
       return 0;
@@ -1850,32 +2591,24 @@ var xtoysBridgeTestSlot;
   };
 
   xtoysBridgeStopAll = function () {
-    var changed;
-    if (runtime === null || stopped) {
+    if (runtime === null) {
       return 0;
     }
     try {
-      changed = stopRetryPending ? runtime.tick() : runtime.stopAll();
-      stopRetryPending = hasRecentFailures(runtime);
-      stopped = !stopRetryPending;
-      return changed;
+      return runtime.stopAll();
     } catch (error) {
       reportError('runtime_error', error, adapter);
       return 0;
     }
   };
 
-  xtoysBridgeReloadConfig = function () {
-    return initialize();
-  };
-
-  xtoysBridgeTestSlot = function (slotId, value) {
+  xtoysBridgeTestSlot = function (slotId, value, direction) {
     var parsedSlot = finiteNumber(slotId);
     var parsedValue = finiteNumber(value);
     var numericSlot;
     var numericValue;
     var selected;
-    var generation;
+    var parsedDirection;
     if (runtime === null || !parsedSlot.ok || !parsedValue.ok) {
       return 0;
     }
@@ -1888,22 +2621,21 @@ var xtoysBridgeTestSlot;
     if (!selected.enabled || selected.id !== numericSlot) {
       return 0;
     }
-    generation = runtime.reserveSlotGeneration(numericSlot);
+    parsedDirection = manualDirection(selected, numericValue, direction);
+    if (!parsedDirection.ok) {
+      return 0;
+    }
+    runtime.invalidateSlot(numericSlot);
     try {
       adapter.applySlot({
         id: numericSlot,
         value: ns.clamp(numericValue, 0, 100),
         frequency: 0,
-        direction: null,
-        generation: generation
+        direction: parsedDirection.value
       }, { rampSeconds: 0 });
-      stopped = false;
-      stopRetryPending = false;
       return 1;
     } catch (error) {
-      stopped = false;
-      stopRetryPending = false;
-      reportError('adapter_apply_error', error, adapter);
+      reportError('xtoys_call_error', error, adapter, numericSlot);
       return 0;
     }
   };

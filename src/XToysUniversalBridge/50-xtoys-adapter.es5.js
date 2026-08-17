@@ -36,7 +36,7 @@
 
   ns.createXToysAdapter = function (logLevel) {
     var level = logLevel === 'off' || logLevel === 'debug' ? logLevel : 'errors';
-    var successfulApplies = 0;
+    var completedCalls = 0;
     var adapter = {
       applySlot: function (slot, transition) {
         var suffix = slotSuffix(slot.id);
@@ -44,12 +44,11 @@
         setVariable('xthb-slot-' + suffix + '-frequency', slot.frequency);
         setVariable('xthb-slot-' + suffix + '-ramp-seconds', transition.rampSeconds);
         setVariable('xthb-slot-' + suffix + '-direction-code', directionCode(slot.direction));
-        setVariable('xthb-slot-' + suffix + '-generation', slot.generation);
         callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' });
-        successfulApplies += 1;
-        if (level === 'debug' && successfulApplies >= 100) {
-          safeConsoleLog('XTHB debug: ' + successfulApplies + ' successful slot updates.');
-          successfulApplies = 0;
+        completedCalls += 1;
+        if (level === 'debug' && completedCalls >= 100) {
+          safeConsoleLog('XTHB debug: 100 XToys slot calls completed without exception.');
+          completedCalls = 0;
         }
       },
       log: function (entry) {

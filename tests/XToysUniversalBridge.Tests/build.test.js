@@ -153,11 +153,13 @@ test('committed release artifact matches sources and remains unchanged after reb
     'xtoysBridgeHandle',
     'xtoysBridgeTick',
     'xtoysBridgeStopAll',
-    'xtoysBridgeReloadConfig',
     'xtoysBridgeTestSlot'
   ];
 
   assert.equal(committed, expected);
+  assert.match(committed, /ns\.MODULE_HAPTICS/);
+  assert.doesNotMatch(committed, /\b(?:let|const|class|async|await)\b|=>/);
+  assert.doesNotMatch(committed, /"action":"setMax(?:Intensity|RotationSpeed)"/);
   assert.doesNotMatch(committed,
     /setMax|eval\(|Function\(|rotateReverse|setPattern|=>|\b(let|const|class|async|await)\b/);
   vm.runInContext(committed, context, { filename: 'HEAD:dist/xtoys-universal-runtime.es5.js' });
@@ -165,6 +167,9 @@ test('committed release artifact matches sources and remains unchanged after reb
   names.forEach(function (name) {
     assert.equal(typeof context[name], 'function', name);
   });
+  assert.deepEqual(Object.keys(context).filter(function (name) {
+    return /^xtoysBridge/.test(name);
+  }).sort(), names.slice().sort());
 
   buildRuntime();
   childProcess.execFileSync(
@@ -172,6 +177,15 @@ test('committed release artifact matches sources and remains unchanged after reb
     ['diff', '--exit-code', '--', 'dist/xtoys-universal-runtime.es5.js'],
     { cwd: repositoryRoot, encoding: 'utf8' }
   );
+});
+
+test('release artifact excludes removed physical reliability state', function () {
+  var source = runtimeHarness.expectedDistribution();
+  assert.doesNotMatch(source, /-generation['\"]/);
+  assert.doesNotMatch(source, /\b(?:generationFloors|pendingDispatches|hapticPendingDispatches|resyncPendingDispatches|recentFailures|stopRetryPending)\b/);
+  assert.doesNotMatch(source, /\b(?:forceResync|reserveSlotGeneration|xtoysBridgeReloadConfig|zeroBeforeReverse|releaseOnly|confirmHapticDispatch)\b/);
+  assert.match(source, /xtoysBridgeTestSlot/);
+  assert.match(source, /directionCode/);
 });
 
 test('concurrent builders never expose a truncated distribution to readers', { timeout: 30000 }, function () {

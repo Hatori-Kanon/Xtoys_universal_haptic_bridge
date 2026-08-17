@@ -1,7 +1,9 @@
 # XToys Universal Game Haptic Bridge Design
 
+> **Superseded for XToys runtime, template, and dispatch:** The protocol goals and logical routing model in this document remain historical context. All XToys-side runtime/adapter behavior, output-template requirements, physical generation, retained retry/resync, live reload, and rotation-reversal dispatch requirements are replaced by [XToys Runtime Simplification and Immediate Rotation Design](2026-08-18-xtoys-runtime-simplification-design.md). Do not use this document as the current XToys setup authority.
+
 Date: 2026-08-08  
-Status: Awaiting written-spec review
+Status: Historical; its XToys runtime, template, and dispatch portions were superseded on 2026-08-18
 
 ## 1. Purpose
 

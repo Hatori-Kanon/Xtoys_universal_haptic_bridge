@@ -191,6 +191,67 @@
     return numberValue(value, code);
   }
 
+  function normalizedRetrigger(raw, target) {
+    var required = [
+      'mode', 'minDropPercent', 'maxDropPercent', 'minRampUpMs',
+      'minRampDownMs', 'textureThresholdMs', 'quietResetMs'
+    ];
+    var index;
+    var value;
+    var result = {};
+    if (raw === undefined) {
+      return { ok: true, value: null };
+    }
+    if (!isObject(raw)) {
+      return fail('invalid_retrigger', 'Retrigger must be an object.');
+    }
+    for (index = 0; index < required.length; index += 1) {
+      if (!hasOwn.call(raw, required[index])) {
+        return fail('invalid_retrigger', 'Every retrigger field is required.');
+      }
+    }
+    if (raw.mode !== 'adaptive') {
+      return fail('invalid_retrigger', 'Unsupported retrigger mode.');
+    }
+    if (target.effect !== 'hold') {
+      return fail('invalid_retrigger_effect', 'Adaptive retrigger requires hold effect.');
+    }
+    value = numberValue(raw.minDropPercent, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minDropPercent = value.value;
+    value = numberValue(raw.maxDropPercent, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.maxDropPercent = value.value;
+    value = numberValue(raw.minRampUpMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minRampUpMs = value.value;
+    value = numberValue(raw.minRampDownMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.minRampDownMs = value.value;
+    value = numberValue(raw.textureThresholdMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.textureThresholdMs = value.value;
+    value = numberValue(raw.quietResetMs, 'invalid_retrigger');
+    if (!value.ok) { return value; }
+    result.quietResetMs = value.value;
+    if (result.minDropPercent < 0 || result.maxDropPercent > 100 ||
+        result.minDropPercent > result.maxDropPercent ||
+        result.minRampUpMs < 0 || result.minRampUpMs > target.rampUpMs ||
+        result.minRampDownMs < 0 || result.minRampDownMs > target.rampDownMs ||
+        result.textureThresholdMs < ns.SCHEDULER_INTERVAL_MS ||
+        result.textureThresholdMs > ns.MAX_TIME_MS ||
+        result.quietResetMs > ns.MAX_TIME_MS ||
+        result.quietResetMs <= result.textureThresholdMs) {
+      return fail('invalid_retrigger', 'Retrigger ranges are inconsistent.');
+    }
+    if (result.minRampDownMs + ns.SCHEDULER_INTERVAL_MS +
+        result.minRampUpMs > target.durationMs) {
+      return fail('invalid_retrigger_timing', 'Minimum retrigger envelope exceeds duration.');
+    }
+    result.mode = 'adaptive';
+    return { ok: true, value: result };
+  }
+
   function normalizedTarget(raw, config, transient) {
     var parsed;
     var rotateSpeed;
@@ -229,7 +290,8 @@
       pulseOffMs: 0,
       priority: 0,
       blend: raw.blend === undefined ? 'replace' : raw.blend,
-      baselineBlend: raw.baselineBlend === undefined ? 'boost' : raw.baselineBlend
+      baselineBlend: raw.baselineBlend === undefined ? 'boost' : raw.baselineBlend,
+      retrigger: null
     };
     parsed = optionalNumber(raw.frequency, 0, 'invalid_number');
     if (!parsed.ok) {
@@ -289,6 +351,15 @@
       return parsed;
     }
     target.priority = parsed.value;
+    if (transient) {
+      parsed = normalizedRetrigger(raw.retrigger, target);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      target.retrigger = parsed.value;
+    } else if (raw.retrigger !== undefined) {
+      return fail('invalid_retrigger', 'Retrigger is only supported for transient targets.');
+    }
     return { ok: true, value: target };
   }
 
