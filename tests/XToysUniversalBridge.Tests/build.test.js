@@ -153,7 +153,6 @@ test('committed release artifact matches sources and remains unchanged after reb
     'xtoysBridgeHandle',
     'xtoysBridgeTick',
     'xtoysBridgeStopAll',
-    'xtoysBridgeReloadConfig',
     'xtoysBridgeTestSlot'
   ];
 
@@ -175,6 +174,15 @@ test('committed release artifact matches sources and remains unchanged after reb
     ['diff', '--exit-code', '--', 'dist/xtoys-universal-runtime.es5.js'],
     { cwd: repositoryRoot, encoding: 'utf8' }
   );
+});
+
+test('release artifact excludes removed physical reliability state', function () {
+  var source = runtimeHarness.expectedDistribution();
+  assert.doesNotMatch(source, /-generation['\"]/);
+  assert.doesNotMatch(source, /\b(?:generationFloors|pendingDispatches|hapticPendingDispatches|resyncPendingDispatches|recentFailures|stopRetryPending)\b/);
+  assert.doesNotMatch(source, /\b(?:forceResync|reserveSlotGeneration|xtoysBridgeReloadConfig|zeroBeforeReverse|releaseOnly|confirmHapticDispatch)\b/);
+  assert.match(source, /xtoysBridgeTestSlot/);
+  assert.match(source, /directionCode/);
 });
 
 test('concurrent builders never expose a truncated distribution to readers', { timeout: 30000 }, function () {

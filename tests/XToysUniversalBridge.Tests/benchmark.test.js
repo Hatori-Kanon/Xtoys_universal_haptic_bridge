@@ -49,6 +49,7 @@ test('benchmark CLI reports deterministic workloads without timing thresholds', 
     result.envelopes.tickAdapterCalls);
   assert.equal(finiteMilliseconds(result.envelopes.milliseconds), true);
   assert.equal(result.adaptiveTick16.enabledSlots, 16);
+  assert.equal(result.adaptiveTick16.adapterCalls >= 0, true);
   assert.equal(result.adaptiveTick16.adapterCalls <= result.adaptiveTick16.enabledSlots, true);
   assert.equal(result.adaptiveTick16.deepCopies, 0);
   assert.equal(result.adaptiveTick16.fullWinnerCopies, 0);

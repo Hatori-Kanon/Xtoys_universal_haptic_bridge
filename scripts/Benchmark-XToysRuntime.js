@@ -260,7 +260,7 @@ function benchmarkAdaptiveTickCopies(namespace, config) {
   namespace.copyObject = function (value) {
     deepCopies += 1;
     if (value !== null && typeof value === 'object') {
-      if (value.target !== undefined && value.generation !== undefined) {
+      if (value.target !== undefined) {
         fullWinnerCopies += 1;
       }
       if (value.foregroundWinner !== undefined && value.transientWinner !== undefined) {
