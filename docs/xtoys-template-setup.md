@@ -6,7 +6,7 @@
 
 将构建产物 `dist/xtoys-universal-runtime.es5.js` 粘贴到 Script 的全局 JavaScript 页面。不要把可复用函数写在内联 Custom JavaScript Action 中。
 
-新增 Script 变量 `xthb-config-json`，值为一个 JSON 字符串。运行时仅在 `xtoysBridgeInit()` 或 `xtoysBridgeReloadConfig()` 时读取它。它必须含有全部五个组和编号 1–16 的全部槽位；未用槽仍保留并设为 `enabled: false`。
+新增 Script 变量 `xthb-config-json`，值为一个 JSON 字符串。运行时在 Script 启动时的 `xtoysBridgeInit()` 中读取它。它必须含有全部五个组和编号 1–16 的全部槽位；未用槽仍保留并设为 `enabled: false`。编辑配置时使用 XToys 既有的停止、编辑、重新启动流程；不需要也不存在运行时配置重载 Action。
 
 ```json
 {
@@ -72,13 +72,15 @@ xtoysBridgeTick();
 
 建立以下 Job，名称必须完全一致：`xthb-output-01` 至 `xthb-output-16`。每个 Job 只配置一次，运行时会通过 `updateJob` 的 `start` 调用刷新它。
 
-每个已启用槽的 Job 要按其配置类型连接相关设备/子通道，并添加这些块 Action：
+每个已启用槽的 Job 要按其配置类型连接相关设备/子通道。每个槽只使用以下四个 Script 变量，并添加这些块 Action：
 
 - 当前强度或当前旋转速度值：`{xthb-slot-NN-value}`。
 - 渐变时间：`{xthb-slot-NN-ramp-seconds}`。
 - 仅当该槽是频率已启用的强度槽时，E-Stim 频率：`{xthb-slot-NN-frequency}`。
 - 仅对旋转槽添加顺时针方向 Action，条件为 `{xthb-slot-NN-direction-code} == 1`。
 - 仅对旋转槽添加逆时针方向 Action，条件为 `{xthb-slot-NN-direction-code} == -1`。
+
+旋转 Job 内的 Action 顺序必须是：先放置两个方向 Action，再放置使用值和渐变变量的速度 Action；也就是方向 Action 必须先于速度 Action。
 
 下表列出 16 个 Job 的精确变量前缀和条件。将 `NN` 换成该行的两位编号，不要另起别名。
 
@@ -101,9 +103,7 @@ xtoysBridgeTick();
 | `xthb-output-15` | `{xthb-slot-15-value}` / `{xthb-slot-15-ramp-seconds}` / `{xthb-slot-15-frequency}` | `{xthb-slot-15-direction-code} == 1` | `{xthb-slot-15-direction-code} == -1` |
 | `xthb-output-16` | `{xthb-slot-16-value}` / `{xthb-slot-16-ramp-seconds}` / `{xthb-slot-16-frequency}` | `{xthb-slot-16-direction-code} == 1` | `{xthb-slot-16-direction-code} == -1` |
 
-`xthb-slot-NN-generation` 是运行时单调递增的**物理下发令牌**，用于防止旧调度结果覆盖新结果；它不是设备 Action 的值，也不会仅凭逻辑事件序号变化就强制重启 Job。若值、频率、方向和渐变时间都没有变化，运行时会保留最新逻辑状态但跳过该槽的变量写入与 `updateJob`。失败重试、手动测试、强制同步和全局停止仍会显式下发。
-
-因此，一个槽的逻辑状态 generation 可能已经推进，而 XToys 中的 `xthb-slot-NN-generation` 仍保持上次真正下发的令牌；下一次物理变化或强制下发会使用严格更大的令牌。关闭未使用槽时，仍保留相应 Job 和配置槽，且不把设备接到它们。
+若值、频率、方向和渐变时间都没有变化，运行时会保留最新逻辑状态但跳过该槽的变量写入与 `updateJob`。逻辑 generation 仅在运行时内仲裁，确保较旧事件不能覆盖较新事件；它不是 Script 变量，也不触发物理 Job 重启。关闭未使用槽时，仍保留相应 Job 和配置槽，且不把设备接到它们。
 
 ## 4. Initial / Final Actions：硬件安全背板
 
@@ -137,9 +137,15 @@ xtoysBridgeTick();
 - `xtoysBridgeInit()`：读取 `xthb-config-json`、验证配置、归零已启用槽并初始化运行时。
 - `xtoysBridgeHandle(payload)`：处理 Global Trigger 映射出的内层 JSON 字符串。
 - `xtoysBridgeTick()`：执行一次调度检查，返回改变槽数。
-- `xtoysBridgeStopAll()`：清空运行状态并以零渐变尝试归零每个已启用槽；可重复调用以重试失败槽。
-- `xtoysBridgeReloadConfig()`：重新读取 `xthb-config-json`；只在准备切换配置时调用。
-- `xtoysBridgeTestSlot(slotId, value)`：手动向一个已启用配置槽输出一次 0–100 值。它与协议命令 `test` 不同，后者不驱动硬件。
+- `xtoysBridgeStopAll()`：清空运行状态并以零渐变尝试归零每个已启用槽。
+- `xtoysBridgeTestSlot(slotId, value, direction)`：手动向一个已启用配置槽输出一次 0–100 值。旋转槽在非零值时必须给出 `clockwise` 或 `counterclockwise`；值为 `0` 时无需方向。它与协议命令 `test` 不同，后者不驱动硬件。
+
+```js
+xtoysBridgeTestSlot(1, 50);
+xtoysBridgeTestSlot(3, 60, 'clockwise');
+xtoysBridgeTestSlot(3, 60, 'counterclockwise');
+xtoysBridgeTestSlot(3, 0);
+```
 
 ## 6. 最终用户协助冒烟检查（待完成）
 
@@ -151,15 +157,15 @@ xtoysBridgeTick();
 - [ ] 发送协议文档中的基线示例；确认强度与旋转基线、渐入时间和顺时针方向。
 - [ ] 发送 `play` 示例；确认强度变化和配置的 ramp 生效。
 - [ ] 发送较高 `sequence` 的方向 `update` 示例；确认旋转方向只在该更新后切换为逆时针。
-- [ ] 等待有限事件到期并让调度 Job tick；确认输出按 ramp 恢复到最新基线，而不是归零或恢复旧状态。
-- [ ] 发送 `stop_all` 示例；确认所有已启用输出 Job 收到零值、零频率和无方向输出。
-- [ ] 停止 Script；确认 Final Actions 再次把强度、旋转速度和适用的频率显式归零。
+- [ ] 等待有限事件到期并让调度 Job tick；核对输出按 ramp 恢复到最新基线，而不是归零或恢复旧状态。
+- [ ] 发送 `stop_all` 示例；核对所有已启用输出 Job 收到零值、零频率和无方向输出。
+- [ ] 停止 Script；核对 Final Actions 再次把强度、旋转速度和适用的频率显式归零。
 - [ ] 记录本次测试使用的 XToys Script 修订：`待填写`。
 - [ ] 导出并记录与本文示例不同的 XToys UI Action JSON（若无差异也写明“无”）：`待填写`。
 - [ ] 相同输出的第二次命中能看见强度先下降再上升。
 - [ ] 快速连续命中进入有界 texture，并在到期后干净停止。
 - [ ] 共享通道上的不同部位命中后，仍活跃的前一部位能恢复输出。
-- [ ] 旋转反向前先达到零值。
+- [ ] 反向攻击到来后，不等待旧 rampDown，直接采用新方向和新速度渐入。
 - [ ] 高频测试期间 XToys scheduler 没有可见积压。
 
 在以上项目全部完成并记录之前，硬件验证状态保持为“待完成”，也不要开始依赖真实设备行为的游戏适配迁移。

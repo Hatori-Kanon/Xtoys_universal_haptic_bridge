@@ -88,11 +88,11 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 
 texture 使用不低于 200 ms 的完整周期（按目标/基线两半交替）：floor 半段恢复基线频率，target 半段使用攻击频率；到期后仍由下一次 100 ms tick 清理。`frequencyEnabled: false` 的槽在普通输出、adaptive fall/rise、texture 两相和旋转反转期间都强制输出频率 `0`，不会从 winner 或基线 metadata 泄漏频率。相同来源、相同部位的新事件会取消该部位的旧事件；不同部位即使共享一个物理槽也不会互相删除，前者到期或停止后后者会恢复为仍活跃的胜者。这个恢复不是一次新命中：不会重新执行完整 fall；rise 会按旧事件剩余寿命收紧，少于一个调度周期时立即恢复当前目标。相同输出值本身不会触发重置，必须提供 `retrigger`。
 
-旋转方向更新始终先以当前方向下发零速度，并且只有该零速度 tuple 被适配器确认后，后续调度 pass 才会应用相反方向；adaptive foreground 停止或到期、恢复相反方向的普通 winner/基线时也遵守同一规则。适配器只使用显式 `rotateDirection`，不会推断或自动反转。
+当显式新 winner 取代旋转方向时，运行时立即在同一次输出刷新中使用新方向和新 winner 的有效渐入时间；不会先下发零速度，也不会等待旧 winner 的 `rampDownMs`。只有没有后继 winner 的释放才会走向零。适配器只使用显式 `rotateDirection`，不会推断或自动交替方向。
 
 ### 错误代码
 
-解析/配置错误返回 `ok: false` 与以下代码之一：`invalid_payload`、`payload_too_large`、`invalid_json`、`unsupported_protocol_version`、`unsupported_command`、`missing_source`、`identifier_too_long`、`invalid_states`、`too_many_states`、`state_label_too_long`、`missing_event_id`、`invalid_sequence`、`invalid_duration`、`invalid_targets`、`too_many_targets`、`missing_targets`、`missing_stop_selector`、`unknown_part`、`unknown_group`、`invalid_effect`、`invalid_number`、`invalid_rotate_direction`、`invalid_blend`、`invalid_baseline_blend`、`invalid_retrigger`、`invalid_retrigger_effect`、`invalid_retrigger_timing`、`invalid_config`、`invalid_log_level`、`invalid_global_multiplier`、`invalid_groups`、`missing_group`、`invalid_group_weight`、`invalid_route_weight`、`invalid_slot_count`、`invalid_slot`、`invalid_slot_id`、`invalid_slot_enabled`、`invalid_slot_type`、`invalid_frequency_enabled`。接受命令但因保留状态容量拒绝时返回 `state_capacity_exceeded`；物理下发失败记录 `adapter_apply_failed`，不会伪装成硬件成功。
+解析/配置错误返回 `ok: false` 与以下代码之一：`invalid_payload`、`payload_too_large`、`invalid_json`、`unsupported_protocol_version`、`unsupported_command`、`missing_source`、`identifier_too_long`、`invalid_states`、`too_many_states`、`state_label_too_long`、`missing_event_id`、`invalid_sequence`、`invalid_duration`、`invalid_targets`、`too_many_targets`、`missing_targets`、`missing_stop_selector`、`unknown_part`、`unknown_group`、`invalid_effect`、`invalid_number`、`invalid_rotate_direction`、`invalid_blend`、`invalid_baseline_blend`、`invalid_retrigger`、`invalid_retrigger_effect`、`invalid_retrigger_timing`、`invalid_config`、`invalid_log_level`、`invalid_global_multiplier`、`invalid_groups`、`missing_group`、`invalid_group_weight`、`invalid_route_weight`、`invalid_slot_count`、`invalid_slot`、`invalid_slot_id`、`invalid_slot_enabled`、`invalid_slot_type`、`invalid_frequency_enabled`。接受命令但因保留状态容量拒绝时返回 `state_capacity_exceeded`；同步 XToys JavaScript 调用抛错时记录 `xtoys_call_error`。调用同步返回只表示 JavaScript 调用没有抛错，不表示硬件已经完成或确认该输出。
 
 支持的叶子部位为：`mouth`、`breast`、`nipple`、`armpit`、`clitoris`、`vulva`、`vagina`、`urethra`、`anus`、`butt`、`penis`、`prostate`。
 
@@ -121,6 +121,8 @@ texture 使用不低于 200 ms 的完整周期（按目标/基线两半交替）
   "payload": "{\"protocolVersion\":1,\"command\":\"update\",\"source\":\"my-game\",\"eventId\":\"drill-7\",\"sequence\":2,\"targets\":[{\"part\":\"vagina\",\"rotateSpeed\":60,\"rotateDirection\":\"counterclockwise\",\"durationMs\":1500,\"rampUpMs\":100,\"rampDownMs\":200}]}"
 }
 ```
+
+该更新被接受后，当前旋转槽在同一次输出 Job 刷新中采用 counterclockwise 与新速度，并使用该目标当前有效的 rampUpMs。运行时不会先发送零速度，也不会等待旧目标的 rampDownMs。XToys 调用返回不代表设备已经完成换向。
 
 ### `stop`
 
@@ -181,9 +183,9 @@ texture 使用不低于 200 ms 的完整周期（按目标/基线两半交替）
 
 XToys 先将虚拟组权重、叶子到槽的路由权重和 `globalMultiplier` 相乘，再夹到 0–100。一个强度槽只读 `intensity`，一个旋转槽只读 `rotateSpeed`；同一目标可以同时包含两者，以驱动不同的独立槽。
 
-同一槽有多个候选时，基线取有效值最高者。瞬态依次按 `priority`、有效值、`sequence`、接受时间和 generation 选择胜者。默认 `boost` 为 `B + A * (100 - B) / 100`；`replace` 使用瞬态值，`max` 使用两者较大值。旋转方向不做数值混合：瞬态脉冲开区间使用瞬态的显式方向，关区间和结束后回到胜出基线的方向。
+同一槽有多个候选时，基线取有效值最高者。瞬态依次按 `priority`、有效值、`sequence`、接受时间和逻辑 generation 选择胜者。逻辑 generation 只用于状态仲裁：较旧的逻辑事件不得擦除较新的事件。默认 `boost` 为 `B + A * (100 - B) / 100`；`replace` 使用瞬态值，`max` 使用两者较大值。旋转方向不做数值混合：瞬态脉冲开区间使用瞬态的显式方向，关区间和结束后回到胜出基线的方向。
 
-`pulse` 的开关按 `(当前时间 - 接受时间) % (pulseOnMs + pulseOffMs)` 计算。调度器每 0.1 秒调用一次，因此到期、脉冲切换和基线恢复在下一次调度时落到物理槽；旧 generation 不得将较新事件归零。
+`pulse` 的开关按 `(当前时间 - 接受时间) % (pulseOnMs + pulseOffMs)` 计算。调度器每 0.1 秒调用一次，因此到期、脉冲切换和基线恢复在下一次调度时落到物理槽；较旧的逻辑 generation 不得将较新事件归零。
 
 ## 限制与失败处理
 

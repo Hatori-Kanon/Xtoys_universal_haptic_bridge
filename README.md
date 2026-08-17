@@ -24,6 +24,10 @@ See the [approved universal bridge specification](docs/superpowers/specs/2026-08
 
 The template is manually started and stopped by the user. It controls current output only; it never changes a device's maximum intensity or maximum rotation speed.
 
+## Current runtime contract
+
+Each output slot uses exactly four Script variables: value, frequency, ramp seconds, and direction code. A newer rotation winner with an explicit direction immediately replaces the old winner using its own effective rise; it does not first send zero or wait for the old ramp-down. XToys JavaScript-call exceptions are recovered from by the next dispatch of the latest resolved state, rather than by retained physical retry/resync state. Configuration is read at Script start and follows XToys' normal stop-edit-start flow; there is no live reload action.
+
 ## Optional adaptive retrigger (shipped)
 
 Protocol v1 now supports an explicit `targets[].retrigger` profile for repeated `hold` attacks whose resolved output is unchanged. It uses a bounded EMA of inter-hit intervals to choose a brief baseline fall and attack rise, so equal-strength hits remain perceptible. The profile is opt-in; changing `rampUpMs` or `rampDownMs` alone never resets the output, and ordinary events retain the existing behavior. See the [protocol v1 guide](docs/xtoys-protocol-v1.md) for the seven-field profile and timing rules.

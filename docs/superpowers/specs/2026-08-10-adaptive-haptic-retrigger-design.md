@@ -1,5 +1,7 @@
 # Adaptive Haptic Retrigger Design
 
+> **Superseded in part:** Physical generation, retained failed-dispatch retry/resync, live reload rollback, and zero-before-reverse requirements are replaced by [XToys Runtime Simplification and Immediate Rotation Design](2026-08-18-xtoys-runtime-simplification-design.md). Logical generation, bounded logical state, cadence, routing, and non-reversal haptic behavior remain authoritative.
+
 **Date:** 2026-08-10
 
 **Status:** Approved in conversation; pending written-spec review
