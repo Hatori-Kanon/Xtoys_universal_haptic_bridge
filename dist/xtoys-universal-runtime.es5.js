@@ -1960,11 +1960,24 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       !sameWinner(previous.transientWinner, current.transientWinner);
   }
 
-  function rampSeconds(previous, current, previousTuple, expiredParts) {
+  function replacementRampSeconds(previous, current, winnerChanged, effectiveRiseMs) {
+    if (current.type === 'rotation' && winnerChanged && current.value > 0) {
+      return ns.clamp(effectiveRiseMs / 1000, 0, 600);
+    }
+    return null;
+  }
+
+  function rampSeconds(previous, current, previousTuple, expiredParts,
+      winnerChanged, effectiveRiseMs) {
     var previousValue = previous === undefined ? 0 : previous.value;
     var milliseconds = 0;
     var currentCore = coreTuple(current);
+    var replacement = replacementRampSeconds(previous, current,
+      winnerChanged, effectiveRiseMs);
 
+    if (replacement !== null) {
+      return replacement;
+    }
     if (sameActuator(previousTuple, currentCore)) {
       return previousTuple.rampSeconds;
     }
@@ -2042,11 +2055,14 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
     function transitionFor(slot, expiredParts) {
       var pending = pendingDispatches[slot.id];
+      var previous = lastSlots[slot.id];
+      var winnerChanged = resolvedWinnerKey(previous) !== resolvedWinnerKey(slot);
       if (pending !== undefined && sameActuator(pending.tuple, coreTuple(slot))) {
         return copyTransition(pending.transition);
       }
       return {
-        rampSeconds: rampSeconds(lastSlots[slot.id], slot, lastTuples[slot.id], expiredParts)
+        rampSeconds: rampSeconds(previous, slot, lastTuples[slot.id],
+          expiredParts, winnerChanged, slot.rampUpMs)
       };
     }
 
@@ -2058,6 +2074,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     }
 
     function resolvedWinnerKey(slot) {
+      if (slot === undefined) {
+        return null;
+      }
       var kind = slot.transientWinner === null ? 'baseline' : 'transient';
       var winner = slot.transientWinner === null
         ? slot.baselineWinner : slot.transientWinner;
@@ -2069,11 +2088,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         winner.sequence === undefined ? '' : winner.sequence,
         winner.generation === undefined ? '' : winner.generation
       ]);
-    }
-
-    function reversesDirection(previous, slot) {
-      return previous !== undefined && previous.direction !== null &&
-        slot.direction !== null && previous.direction !== slot.direction;
     }
 
     function restoresOlderForeground(previous, winner) {
@@ -2091,75 +2105,30 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
     function prepareHapticSlot(slot, atMs) {
       var key = foregroundKey(slot);
-      var releaseKey;
       var envelope = slotEnvelopes[slot.id];
       var pending = hapticPendingDispatches[slot.id];
       var previous = lastSlots[slot.id];
       var winner = slot.foregroundWinner;
+      var winnerChanged = resolvedWinnerKey(previous) !== resolvedWinnerKey(slot);
+      var effectiveRiseMs;
       var plan;
       var physical;
       var targetPhase;
       var transition;
-      var reversing;
       var restored;
 
       if (key === null) {
-        releaseKey = resolvedWinnerKey(slot);
-        if (envelope !== undefined && envelope.releaseOnly &&
-            envelope.ownerKey === releaseKey) {
-          key = releaseKey;
-        } else if (releaseKey !== null && previous !== undefined &&
-            previous.foregroundWinner !== null &&
-            reversesDirection(previous, slot)) {
-          key = releaseKey;
-        } else {
-          delete slotEnvelopes[slot.id];
-          delete hapticPendingDispatches[slot.id];
-          return { slot: slot, transition: null, token: null };
-        }
+        delete slotEnvelopes[slot.id];
+        delete hapticPendingDispatches[slot.id];
+        return { slot: slot, transition: null, token: null };
       }
 
       if (envelope === undefined || envelope.ownerKey !== key) {
         delete hapticPendingDispatches[slot.id];
-        if (winner === null) {
-          envelope = {
-            ownerKey: key,
-            ownerGeneration: slot.generation,
-            phase: 'fall',
-            riseAt: null,
-            floorApplied: false,
-            dropPercent: 100,
-            fallMs: previous.rampDownMs,
-            riseMs: slot.rampUpMs,
-            textureStartedAt: null,
-            pendingTexturePhase: null,
-            pendingTextureSlot: null,
-            pendingTextureTransition: null,
-            releaseOnly: true,
-            restoredOwner: false,
-            zeroBeforeReverse: true,
-            fallDirection: previous.direction
-          };
-          slotEnvelopes[slot.id] = envelope;
-          physical = copySlot(slot);
-          physical.value = 0;
-          physical.frequency = slot.baselineFrequency;
-          physical.direction = envelope.fallDirection;
-          return {
-            slot: physical,
-            transition: { rampSeconds: envelope.fallMs / 1000 },
-            token: {
-              slotId: slot.id,
-              ownerKey: key,
-              ownerGeneration: envelope.ownerGeneration,
-              phase: 'fall'
-            }
-          };
-        }
-
         plan = ns.envelopePlan(winner.target, winner.cadence);
-        reversing = reversesDirection(previous, slot);
         restored = restoresOlderForeground(previous, winner);
+        effectiveRiseMs = restored
+          ? restoredRiseMs(winner, plan, atMs) : plan.riseMs;
         envelope = {
           ownerKey: key,
           ownerGeneration: winner.generation,
@@ -2168,34 +2137,27 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
           floorApplied: true,
           dropPercent: plan.dropPercent,
           fallMs: plan.fallMs,
-          riseMs: restored ? restoredRiseMs(winner, plan, atMs) : plan.riseMs,
+          riseMs: effectiveRiseMs,
           textureStartedAt: winner.cadence.mode === 'texture'
             ? winner.cadence.textureStartedAt : null,
           pendingTexturePhase: null,
           pendingTextureSlot: null,
           pendingTextureTransition: null,
-          releaseOnly: false,
-          restoredOwner: restored,
-          zeroBeforeReverse: reversing,
-          fallDirection: reversing ? previous.direction : null
+          restoredOwner: restored
         };
         slotEnvelopes[slot.id] = envelope;
-        if (reversing) {
-          physical = copySlot(slot);
-          physical.value = 0;
-          physical.frequency = slot.baselineFrequency;
-          physical.direction = envelope.fallDirection;
-          envelope.phase = 'fall';
-          envelope.riseAt = null;
-          envelope.floorApplied = false;
+        transition = replacementRampSeconds(previous, slot, winnerChanged,
+          effectiveRiseMs);
+        if (transition !== null) {
+          envelope.phase = 'target';
           return {
-            slot: physical,
-            transition: { rampSeconds: envelope.fallMs / 1000 },
+            slot: slot,
+            transition: { rampSeconds: transition },
             token: {
               slotId: slot.id,
               ownerKey: key,
               ownerGeneration: envelope.ownerGeneration,
-              phase: 'fall'
+              phase: 'target'
             }
           };
         }
@@ -2315,15 +2277,9 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       }
       if (envelope.phase === 'fall') {
         physical = copySlot(slot);
-        if (envelope.zeroBeforeReverse) {
-          physical.value = 0;
-          physical.frequency = slot.baselineFrequency;
-          physical.direction = envelope.fallDirection;
-        } else {
-          physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
-            winner.target.baselineBlend, envelope.dropPercent);
-          physical.frequency = slot.baselineFrequency;
-        }
+        physical.value = ns.hapticFloor(slot.baselineValue, slot.value,
+          winner.target.baselineBlend, envelope.dropPercent);
+        physical.frequency = slot.baselineFrequency;
         return {
           slot: physical,
           transition: { rampSeconds: envelope.fallMs / 1000 },

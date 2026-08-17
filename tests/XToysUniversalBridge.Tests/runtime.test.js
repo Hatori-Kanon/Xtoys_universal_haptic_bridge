@@ -898,63 +898,28 @@ test('failed texture target is retried across a floor boundary before resampling
   assert.equal(lastCall(subject, 1).slot.frequency, 20);
 });
 
-test('rotation reverses only after a confirmed zero-speed floor', function () {
+test('opposite rotation attack immediately adopts the new direction and effective rise', function () {
   var subject = createSubject(1000);
+  var call;
   subject.runtime.handle(payload('play', {
-    eventId: 'clockwise', sequence: 1,
+    eventId: 'clockwise-fast', sequence: 1,
     targets: [target('vagina', adaptiveValues({
-      intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise'
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'clockwise'
     }))]
   }));
+  subject.calls.length = 0;
   subject.loaded.setNow(1400);
   subject.runtime.handle(payload('play', {
-    eventId: 'counterclockwise', sequence: 1,
+    eventId: 'counterclockwise-slow', sequence: 1,
     targets: [target('vagina', adaptiveValues({
-      intensity: 0, rotateSpeed: 60, rotateDirection: 'counterclockwise'
+      intensity: 0, rotateSpeed: 40, rotateDirection: 'counterclockwise'
     }))]
   }));
-  assert.equal(lastCall(subject, 3).slot.value, 0);
-  assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
-  subject.loaded.setNow(1500);
-  subject.runtime.tick();
-  assert.equal(lastCall(subject, 3).slot.value, 30);
-  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
-});
-
-test('failed rotation zero does not switch direction', function () {
-  var failZero = false;
-  var subject = createSubject(1000, function (slot) {
-    if (failZero && slot.id === 3 && slot.value === 0) {
-      throw new Error('rotation zero failed');
-    }
-  });
-  var failed;
-  subject.runtime.handle(payload('play', {
-    eventId: 'clockwise', sequence: 1,
-    targets: [target('vagina', adaptiveValues({
-      intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise'
-    }))]
-  }));
-  subject.loaded.setNow(1400);
-  failZero = true;
-  subject.runtime.handle(payload('play', {
-    eventId: 'counterclockwise', sequence: 1,
-    targets: [target('vagina', adaptiveValues({
-      intensity: 0, rotateSpeed: 60, rotateDirection: 'counterclockwise'
-    }))]
-  }));
-  failed = lastCall(subject, 3);
-  assert.equal(failed.slot.value, 0);
-  assert.equal(failed.slot.direction, 'clockwise');
-  failZero = false;
-  subject.loaded.setNow(1500);
-  subject.runtime.tick();
-  assert.equal(lastCall(subject, 3).slot.value, 0);
-  assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
-  subject.loaded.setNow(1600);
-  subject.runtime.tick();
-  assert.equal(lastCall(subject, 3).slot.value, 30);
-  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(callsFor(subject, 3).length, 1);
+  call = lastCall(subject, 3);
+  assert.equal(call.slot.value, 20);
+  assert.equal(call.slot.direction, 'counterclockwise');
+  assert.equal(Math.abs(call.transition.rampSeconds - 0.11333333333333334) < 1e-12, true);
 });
 
 test('same-direction rotation changes speed without an intermediate zero', function () {
@@ -976,22 +941,12 @@ test('same-direction rotation changes speed without an intermediate zero', funct
   assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
 });
 
-test('stopping an adaptive rotation confirms zero before restoring the opposite baseline direction', function () {
-  var failReleaseZero = false;
-  var failedZero;
-  var retriedZero;
-  var subject = createSubject(1000, function (slot) {
-    if (failReleaseZero && slot.id === 3 && slot.value === 0 &&
-        slot.direction === 'clockwise') {
-      failReleaseZero = false;
-      throw new Error('release zero failed');
-    }
-  });
-
+test('stopping rotation immediately restores an opposite baseline with its rise', function () {
+  var subject = createSubject(1000);
   subject.runtime.handle(payload('set_baseline', {
     sequence: 1,
     targets: [target('vagina', {
-      rotateSpeed: 30, rotateDirection: 'counterclockwise'
+      rotateSpeed: 30, rotateDirection: 'counterclockwise', rampUpMs: 120
     })]
   }));
   subject.runtime.handle(payload('play', {
@@ -1000,56 +955,31 @@ test('stopping an adaptive rotation confirms zero before restoring the opposite 
       intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise'
     }))]
   }));
-  subject.loaded.setNow(1100);
-  subject.runtime.tick();
-  assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
-
-  failReleaseZero = true;
+  subject.calls.length = 0;
   subject.loaded.setNow(1200);
   subject.runtime.handle(payload('stop', { eventId: 'clockwise-stop' }));
-  failedZero = lastCall(subject, 3);
-  assert.equal(failedZero.slot.value, 0);
-  assert.equal(failedZero.slot.direction, 'clockwise');
-
-  subject.loaded.setNow(1300);
-  subject.runtime.tick();
-  retriedZero = lastCall(subject, 3);
-  assert.equal(retriedZero.slot.value, 0);
-  assert.equal(retriedZero.slot.direction, 'clockwise');
-  subject.loaded.setNow(1400);
-  subject.runtime.tick();
+  assert.equal(callsFor(subject, 3).length, 1);
   assert.equal(lastCall(subject, 3).slot.value, 15);
   assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(lastCall(subject, 3).transition.rampSeconds, 0.12);
 });
 
-test('adaptive rotation expiry reaches zero before restoring the opposite baseline direction', function () {
-  var subject = createSubject(1000);
-
-  subject.runtime.handle(payload('set_baseline', {
-    sequence: 1,
+test('rotation with no successor uses the departing ramp down to zero', function () {
+  var subject = createSubject(0);
+  subject.runtime.handle(payload('play', {
+    eventId: 'only-rotation', sequence: 1,
     targets: [target('vagina', {
-      rotateSpeed: 30, rotateDirection: 'counterclockwise'
+      rotateSpeed: 60, rotateDirection: 'clockwise', durationMs: 1000,
+      rampUpMs: 100, rampDownMs: 700
     })]
   }));
-  subject.runtime.handle(payload('play', {
-    eventId: 'clockwise-expiry', sequence: 1,
-    targets: [target('vagina', adaptiveValues({
-      intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise',
-      durationMs: 500
-    }))]
-  }));
-  subject.loaded.setNow(1100);
-  subject.runtime.tick();
-  assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
-
-  subject.loaded.setNow(1500);
-  subject.runtime.tick();
+  subject.calls.length = 0;
+  subject.loaded.setNow(100);
+  subject.runtime.handle(payload('stop', { eventId: 'only-rotation' }));
+  assert.equal(callsFor(subject, 3).length, 1);
   assert.equal(lastCall(subject, 3).slot.value, 0);
-  assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
-  subject.loaded.setNow(1600);
-  subject.runtime.tick();
-  assert.equal(lastCall(subject, 3).slot.value, 15);
-  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(lastCall(subject, 3).slot.direction, null);
+  assert.equal(lastCall(subject, 3).transition.rampSeconds, 0.7);
 });
 
 test('restoring an older adaptive part skips a full fall when little lifetime remains', function () {
@@ -1078,7 +1008,7 @@ test('restoring an older adaptive part skips a full fall when little lifetime re
   assert.equal(lastCall(subject, 1).transition.rampSeconds, 0);
 });
 
-test('frequency-disabled slots keep ordinary fall texture and rotation phases at zero frequency', function () {
+test('frequency-disabled slots keep ordinary fall texture and immediate rotation at zero frequency', function () {
   var ordinary = createSubject(1000);
   var adaptive = createSubject(1000);
   var texture = createSubject(1000);
@@ -1138,7 +1068,7 @@ test('frequency-disabled slots keep ordinary fall texture and rotation phases at
       rotateDirection: 'counterclockwise'
     }))]
   }));
-  assert.equal(lastCall(rotation, 3).slot.value, 0);
+  assert.equal(lastCall(rotation, 3).slot.direction, 'counterclockwise');
   assert.equal(lastCall(rotation, 3).slot.frequency, 0);
   rotation.loaded.setNow(1100);
   rotation.runtime.tick();
@@ -1182,10 +1112,9 @@ test('runtime haptic snapshots combine logical diagnostics and defensive envelop
   ].mode, 'single');
   assert.equal(snapshot.slotEnvelopes[1].ownerKey, ownerKey);
   assert.deepEqual(Object.keys(snapshot.slotEnvelopes[1]).sort(), [
-    'dropPercent', 'fallDirection', 'fallMs', 'floorApplied', 'ownerGeneration',
-    'ownerKey', 'pendingTexturePhase', 'pendingTextureSlot',
-    'pendingTextureTransition', 'phase', 'releaseOnly', 'restoredOwner',
-    'riseAt', 'riseMs', 'textureStartedAt', 'zeroBeforeReverse'
+    'dropPercent', 'fallMs', 'floorApplied', 'ownerGeneration', 'ownerKey',
+    'pendingTexturePhase', 'pendingTextureSlot', 'pendingTextureTransition',
+    'phase', 'restoredOwner', 'riseAt', 'riseMs', 'textureStartedAt'
   ]);
   snapshot.cadenceRecords[JSON.stringify(['runtime-test', 'clitoris'])].mode = 'mutated';
   snapshot.partOwners[JSON.stringify(['runtime-test', 'clitoris'])].adaptiveEventKey = 'mutated';
