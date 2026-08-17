@@ -24,9 +24,9 @@ See the [approved universal bridge specification](docs/superpowers/specs/2026-08
 
 The template is manually started and stopped by the user. It controls current output only; it never changes a device's maximum intensity or maximum rotation speed.
 
-## Planned follow-up
+## Optional adaptive retrigger (shipped)
 
-After the current runtime performance-hardening pass, design an explicit optional retrigger envelope for repeated stimuli whose resolved physical output is unchanged. This will let a game Bridge request a brief return to the winning baseline followed by a new ramp to the attack target, so equal-strength overlapping attacks can remain perceptible. A changed `rampSeconds` alone does not imply that baseline reset, and the behavior will not be added implicitly to ordinary protocol v1 events.
+Protocol v1 now supports an explicit `targets[].retrigger` profile for repeated `hold` attacks whose resolved output is unchanged. It uses a bounded EMA of inter-hit intervals to choose a brief baseline fall and attack rise, so equal-strength hits remain perceptible. The profile is opt-in; changing `rampUpMs` or `rampDownMs` alone never resets the output, and ordinary events retain the existing behavior. See the [protocol v1 guide](docs/xtoys-protocol-v1.md) for the seven-field profile and timing rules.
 
 ## Performance diagnostics
 

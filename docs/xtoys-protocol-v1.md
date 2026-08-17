@@ -54,6 +54,32 @@ Webhook 的固定外层 `action` 是 `xtoys_game_bridge`。真实协议对象必
 
 所有数值必须是有限数。`intensity`、`frequency`、`rotateSpeed` 会夹到 0–100；`durationMs`、渐变和脉冲时间会夹到 0–600000 ms。协议不控制设备的最大强度或最大旋转速度。
 
+### 自适应重复触发（可选）
+
+在瞬态 `hold` 目标上可显式加入以下**恰好七个字段**的 `retrigger` 对象；它不会改变协议版本，也不能用于基线、停止选择器或 `pulse` 目标：
+
+```json
+{
+  "mode": "adaptive",
+  "minDropPercent": 25,
+  "maxDropPercent": 100,
+  "minRampUpMs": 30,
+  "minRampDownMs": 20,
+  "textureThresholdMs": 150,
+  "quietResetMs": 600
+}
+```
+
+连续命中同一 `source + part` 时，运行时在 `quietResetMs` 内以 `0.75 * 旧平均间隔 + 0.25 * 新间隔` 更新 EMA；静默达到该值后清除 cadence。平均间隔低于 `textureThresholdMs` 进入 texture，否则进入 adaptive。adaptive 会从当前胜出基线向下落到按间隔插值的 floor，再按插值 ramp 回到攻击值；所有 fall/rise 时间至少分别为 `minRampDownMs`/`minRampUpMs`，并在剩余持续时间不足时按比例压缩。`textureThresholdMs` 至少为 100 ms，调度器采样周期为 100 ms。
+
+texture 使用不低于 200 ms 的完整周期（按目标/基线两半交替）：floor 半段恢复基线频率，target 半段使用攻击频率；到期后仍由下一次 100 ms tick 清理。相同来源、相同部位的新事件会取消该部位的旧事件；不同部位即使共享一个物理槽也不会互相删除，前者到期或停止后后者会恢复为仍活跃的胜者。相同输出值本身不会触发重置，必须提供 `retrigger`。
+
+旋转方向更新始终先以零值下发，再应用相反方向；适配器只使用显式 `rotateDirection`，不会推断或自动反转。
+
+### 错误代码
+
+解析/配置错误返回 `ok: false` 与以下代码之一：`invalid_payload`、`payload_too_large`、`invalid_json`、`unsupported_protocol_version`、`unsupported_command`、`missing_source`、`identifier_too_long`、`invalid_states`、`too_many_states`、`state_label_too_long`、`missing_event_id`、`invalid_sequence`、`invalid_duration`、`invalid_targets`、`too_many_targets`、`missing_targets`、`missing_stop_selector`、`unknown_part`、`unknown_group`、`invalid_effect`、`invalid_number`、`invalid_rotate_direction`、`invalid_blend`、`invalid_baseline_blend`、`invalid_retrigger`、`invalid_retrigger_effect`、`invalid_retrigger_timing`、`invalid_config`、`invalid_log_level`、`invalid_global_multiplier`、`invalid_groups`、`missing_group`、`invalid_group_weight`、`invalid_route_weight`、`invalid_slot_count`、`invalid_slot`、`invalid_slot_id`、`invalid_slot_enabled`、`invalid_slot_type`、`invalid_frequency_enabled`。接受命令但因保留状态容量拒绝时返回 `state_capacity_exceeded`；物理下发失败记录 `adapter_apply_failed`，不会伪装成硬件成功。
+
 支持的叶子部位为：`mouth`、`breast`、`nipple`、`armpit`、`clitoris`、`vulva`、`vagina`、`urethra`、`anus`、`butt`、`penis`、`prostate`。
 
 支持的虚拟组为：`genitals`、`lower_body`、`double_hole`、`whole_body`、`mixed`。组到叶子部位的权重由 XToys 配置决定；游戏应在能区分时发送叶子部位。

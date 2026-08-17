@@ -158,6 +158,9 @@ test('committed release artifact matches sources and remains unchanged after reb
   ];
 
   assert.equal(committed, expected);
+  assert.match(committed, /ns\.MODULE_HAPTICS/);
+  assert.doesNotMatch(committed, /\b(?:let|const|class|async|await)\b|=>/);
+  assert.doesNotMatch(committed, /"action":"setMax(?:Intensity|RotationSpeed)"/);
   assert.doesNotMatch(committed,
     /setMax|eval\(|Function\(|rotateReverse|setPattern|=>|\b(let|const|class|async|await)\b/);
   vm.runInContext(committed, context, { filename: 'HEAD:dist/xtoys-universal-runtime.es5.js' });
