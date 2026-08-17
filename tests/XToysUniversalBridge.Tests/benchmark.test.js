@@ -25,12 +25,28 @@ test('benchmark CLI reports deterministic workloads without timing thresholds', 
   assert.equal(finiteMilliseconds(result.sameEvent.milliseconds), true);
   assert.equal(result.adaptiveSamePart.updates, 20);
   assert.equal(result.adaptiveSamePart.cadenceRecords, 1);
-  assert.equal(result.adaptiveSamePart.envelopeSlots <= 16, true);
-  assert.equal(result.adaptiveSamePart.adapterCalls <= 2 * (20 + 1), true);
+  assert.equal(result.adaptiveSamePart.affectedSlots, 2);
+  assert.equal(result.adaptiveSamePart.initialAdapterCalls, 2);
+  assert.equal(result.adaptiveSamePart.maxUpdateAdapterCalls <=
+    result.adaptiveSamePart.affectedSlots, true);
+  assert.equal(result.adaptiveSamePart.zeroUpdateDispatches > 0, true);
+  assert.equal(result.adaptiveSamePart.fullUpdateDispatches > 0, true);
+  assert.equal(result.adaptiveSamePart.adapterCalls,
+    result.adaptiveSamePart.initialAdapterCalls +
+    result.adaptiveSamePart.updateAdapterCalls);
+  assert.equal(result.adaptiveSamePart.envelopeSlots <= result.adaptiveSamePart.affectedSlots, true);
   assert.equal(finiteMilliseconds(result.adaptiveSamePart.milliseconds), true);
   assert.equal(result.envelopes.updates, 10);
-  assert.equal(result.envelopes.envelopeSlots <= 16, true);
-  assert.equal(result.envelopes.adapterCalls <= 16 + 16 * 10, true);
+  assert.equal(result.envelopes.affectedSlots, 2);
+  assert.equal(result.envelopes.initialAdapterCalls, result.envelopes.affectedSlots);
+  assert.equal(result.envelopes.retriggerAdapterCalls, result.envelopes.affectedSlots);
+  assert.equal(result.envelopes.maxTickAdapterCalls <= result.envelopes.affectedSlots, true);
+  assert.equal(result.envelopes.activeTickDispatches > 0, true);
+  assert.equal(result.envelopes.zeroTickDispatches > 0, true);
+  assert.equal(result.envelopes.envelopeSlots <= result.envelopes.affectedSlots, true);
+  assert.equal(result.envelopes.adapterCalls,
+    result.envelopes.initialAdapterCalls + result.envelopes.retriggerAdapterCalls +
+    result.envelopes.tickAdapterCalls);
   assert.equal(finiteMilliseconds(result.envelopes.milliseconds), true);
   assert.deepEqual(result.uniqueEvents.map(function (row) {
     return [row.requested, row.accepted, row.rejected];

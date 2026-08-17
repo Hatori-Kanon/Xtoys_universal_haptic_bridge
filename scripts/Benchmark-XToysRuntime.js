@@ -62,6 +62,15 @@ function adaptivePayload(command, eventId, sequence) {
   return JSON.stringify(message);
 }
 
+function adaptiveBenchmarkConfig(config) {
+  var benchmarkConfig = JSON.parse(JSON.stringify(config));
+  benchmarkConfig.slots.forEach(function (slot) {
+    slot.enabled = slot.enabled === true && slot.type === 'intensity' &&
+      slot.routes.clitoris !== undefined && slot.routes.clitoris > 0;
+  });
+  return benchmarkConfig;
+}
+
 function milliseconds(started) {
   return Number(process.hrtime.bigint() - started) / 1000000;
 }
@@ -121,6 +130,11 @@ function benchmarkTicks(namespace, config, activeEvents, iterations) {
 
 function benchmarkAdaptiveSamePart(namespace, config, updates) {
   var adapterCalls = 0;
+  var initialAdapterCalls;
+  var maxUpdateAdapterCalls = 0;
+  var updateAdapterCalls = 0;
+  var zeroUpdateDispatches = 0;
+  var fullUpdateDispatches = 0;
   var now = 0;
   var runtime = createRuntime(namespace, config, function () {
     adapterCalls += 1;
@@ -128,17 +142,36 @@ function benchmarkAdaptiveSamePart(namespace, config, updates) {
   var index;
   var snapshot;
   var started;
+  var before;
+  var dispatched;
   runtime.handle(adaptivePayload('play', 'adaptive-same-part', 1));
+  initialAdapterCalls = adapterCalls;
   started = process.hrtime.bigint();
   for (index = 2; index <= updates + 1; index += 1) {
     now = (index - 1) * 50;
+    before = adapterCalls;
     runtime.handle(adaptivePayload('update', 'adaptive-same-part', index));
+    dispatched = adapterCalls - before;
+    updateAdapterCalls += dispatched;
+    maxUpdateAdapterCalls = Math.max(maxUpdateAdapterCalls, dispatched);
+    if (dispatched === 0) {
+      zeroUpdateDispatches += 1;
+    }
+    if (dispatched > 0) {
+      fullUpdateDispatches += 1;
+    }
   }
   snapshot = runtime.hapticSnapshot();
   return {
     updates: updates,
     cadenceRecords: Object.keys(snapshot.cadenceRecords || {}).length,
     envelopeSlots: Object.keys(snapshot.slotEnvelopes || {}).length,
+    affectedSlots: Object.keys(snapshot.slotEnvelopes || {}).length,
+    initialAdapterCalls: initialAdapterCalls,
+    maxUpdateAdapterCalls: maxUpdateAdapterCalls,
+    updateAdapterCalls: updateAdapterCalls,
+    zeroUpdateDispatches: zeroUpdateDispatches,
+    fullUpdateDispatches: fullUpdateDispatches,
     adapterCalls: adapterCalls,
     milliseconds: milliseconds(started)
   };
@@ -146,24 +179,53 @@ function benchmarkAdaptiveSamePart(namespace, config, updates) {
 
 function benchmarkEnvelopes(namespace, config, updates) {
   var adapterCalls = 0;
+  var initialAdapterCalls;
+  var retriggerAdapterCalls;
+  var maxTickAdapterCalls = 0;
+  var activeTickDispatches = 0;
+  var zeroTickDispatches = 0;
+  var tickAdapterCalls = 0;
   var now = 0;
   var runtime = createRuntime(namespace, config, function () {
     adapterCalls += 1;
   }, function () { return now; });
   var index;
   var snapshot;
+  var beforeCalls;
+  var dispatched;
   var started;
   runtime.handle(adaptivePayload('play', 'adaptive-envelopes', 1));
+  initialAdapterCalls = adapterCalls;
   started = process.hrtime.bigint();
+  now = 50;
+  beforeCalls = adapterCalls;
+  runtime.handle(adaptivePayload('update', 'adaptive-envelopes', 2));
+  retriggerAdapterCalls = adapterCalls - beforeCalls;
   for (index = 1; index <= updates; index += 1) {
     now = index * 50;
+    beforeCalls = adapterCalls;
     runtime.tick();
+    dispatched = adapterCalls - beforeCalls;
+    tickAdapterCalls += dispatched;
+    maxTickAdapterCalls = Math.max(maxTickAdapterCalls, dispatched);
+    if (dispatched > 0) {
+      activeTickDispatches += 1;
+    } else {
+      zeroTickDispatches += 1;
+    }
   }
   snapshot = runtime.hapticSnapshot();
   return {
     updates: updates,
     cadenceRecords: Object.keys(snapshot.cadenceRecords || {}).length,
     envelopeSlots: Object.keys(snapshot.slotEnvelopes || {}).length,
+    affectedSlots: Object.keys(snapshot.slotEnvelopes || {}).length,
+    initialAdapterCalls: initialAdapterCalls,
+    retriggerAdapterCalls: retriggerAdapterCalls,
+    maxTickAdapterCalls: maxTickAdapterCalls,
+    activeTickDispatches: activeTickDispatches,
+    zeroTickDispatches: zeroTickDispatches,
+    tickAdapterCalls: tickAdapterCalls,
     adapterCalls: adapterCalls,
     milliseconds: milliseconds(started)
   };
@@ -173,12 +235,13 @@ function main() {
   var testMode = process.argv.indexOf('--test') !== -1;
   var namespace = loadNamespace();
   var config = loadConfig();
+  var adaptiveConfig = adaptiveBenchmarkConfig(config);
   var uniqueCounts = [32, 64, 128, 129];
   var output = {
     nodeVersion: process.version,
     sameEvent: benchmarkSameEvent(namespace, config, testMode ? 20 : 2000),
-    adaptiveSamePart: benchmarkAdaptiveSamePart(namespace, config, testMode ? 20 : 2000),
-    envelopes: benchmarkEnvelopes(namespace, config, testMode ? 10 : 1000),
+    adaptiveSamePart: benchmarkAdaptiveSamePart(namespace, adaptiveConfig, testMode ? 20 : 2000),
+    envelopes: benchmarkEnvelopes(namespace, adaptiveConfig, testMode ? 10 : 1000),
     uniqueEvents: uniqueCounts.map(function (count) {
       return benchmarkUniqueEvents(namespace, config, count);
     }),
