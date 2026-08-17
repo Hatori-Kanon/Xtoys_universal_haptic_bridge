@@ -2007,6 +2007,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       try {
         outputAdapter.applySlot(actuatorSlot(slot), copyTransition(transition));
       } catch (error) {
+        lastSlots[slot.id] = copySlot(slot);
+        delete lastTuples[slot.id];
         reportCallError(slot.id, error);
         return { changed: false, completed: false };
       }
@@ -2561,7 +2563,7 @@ var xtoysBridgeTestSlot;
   xtoysBridgeHandle = function (payloadText) {
     var result;
     if (runtime === null) {
-      return 1;
+      return 0;
     }
     try {
       result = runtime.handle(payloadText);

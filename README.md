@@ -14,7 +14,7 @@ The universal protocol and XToys-side runtime milestone is implemented, with its
 - Game-computed rotation speed and direction, routed to XToys Rotate outputs.
 - Manual XToys Script lifecycle without game-process detection or heartbeat logic.
 
-See the [approved universal bridge specification](docs/superpowers/specs/2026-08-08-xtoys-universal-haptic-bridge-design.md).
+The current XToys runtime, template, and dispatch authority is the [XToys Runtime Simplification and Immediate Rotation Design](docs/superpowers/specs/2026-08-18-xtoys-runtime-simplification-design.md). The [earlier universal bridge design](docs/superpowers/specs/2026-08-08-xtoys-universal-haptic-bridge-design.md) remains historical background for the protocol goals it introduced.
 
 ## Quick start
 

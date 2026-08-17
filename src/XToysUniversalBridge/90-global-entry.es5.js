@@ -111,7 +111,7 @@ var xtoysBridgeTestSlot;
   xtoysBridgeHandle = function (payloadText) {
     var result;
     if (runtime === null) {
-      return 1;
+      return 0;
     }
     try {
       result = runtime.handle(payloadText);

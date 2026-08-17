@@ -177,7 +177,7 @@ test('handle returns contract status, catches failures, and protocol test never 
   var loaded = loadRuntime({ variables: variables });
   var actionsBefore;
 
-  assert.equal(loaded.context.xtoysBridgeHandle('{'), 1);
+  assert.equal(loaded.context.xtoysBridgeHandle('{'), 0);
   assert.equal(loaded.context.xtoysBridgeTick(), 0);
   assert.equal(loaded.context.xtoysBridgeStopAll(), 0);
   assert.equal(loaded.context.xtoysBridgeTestSlot(1, 20), 0);

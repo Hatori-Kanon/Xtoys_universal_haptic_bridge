@@ -6,7 +6,7 @@
 
 将构建产物 `dist/xtoys-universal-runtime.es5.js` 粘贴到 Script 的全局 JavaScript 页面。不要把可复用函数写在内联 Custom JavaScript Action 中。
 
-新增 Script 变量 `xthb-config-json`，值为一个 JSON 字符串。运行时在 Script 启动时的 `xtoysBridgeInit()` 中读取它。它必须含有全部五个组和编号 1–16 的全部槽位；未用槽仍保留并设为 `enabled: false`。编辑配置时使用 XToys 既有的停止、编辑、重新启动流程；不需要也不存在运行时配置重载 Action。
+新增 Script 变量 `xthb-config-json`，值为一个 JSON 字符串。运行时在 Script 启动时的 `xtoysBridgeInit()` 中读取它。它必须含有全部五个组和编号 1–16 的全部槽位；未用槽仍保留并设为 `enabled: false`。XToys 本身只在 Script 已停止时开放配置编辑；桥接器不增加额外的停止/重启要求，也不需要或提供运行时配置重载 Action。
 
 ```json
 {
@@ -147,7 +147,21 @@ xtoysBridgeTestSlot(3, 60, 'counterclockwise');
 xtoysBridgeTestSlot(3, 0);
 ```
 
-## 6. 最终用户协助冒烟检查（待完成）
+## 6. 现有通用模板迁移检查
+
+已有旧版通用模板时，不需要重建每个游戏的脚本。请在 XToys 已停止、脚本编辑界面可用时完成一次迁移：
+
+1. 用最新的 `dist/xtoys-universal-runtime.es5.js` 替换全局 JavaScript。
+2. 确认每个 `xthb-output-NN` 槽只保留 `value`、`frequency`、`ramp-seconds`、`direction-code` 四个 Script 变量。
+3. 删除全部 `xthb-slot-NN-generation` Script 变量，包括未启用槽遗留的同名变量。
+4. 把每个输出 Job 的输入/Action 参数改为只引用上述四个变量；旋转 Job 仍须先执行方向 Action，再执行速度/渐变 Action。
+5. 删除调用 `xtoysBridgeReloadConfig()` 的所有 Custom JavaScript Action，以及只为调用它而建立的 Trigger。
+6. 保留 `xthb-scheduler`、`xthb-output-01` 至 `xthb-output-16`、Initial 零值 Actions 和 Final 零值 Actions。
+7. 保存后按 XToys 的普通流程启动 Script，并先用 `xtoysBridgeTestSlot(...)` 与下方冒烟清单核对启用槽，再接入游戏 Webhook。
+
+这些步骤只是旧模板的数据迁移；它们没有给 XToys 增加第二套配置生命周期。
+
+## 7. 最终用户协助冒烟检查（待完成）
 
 此检查目前明确为 **待用户在 XToys 与实际硬件上完成**。自动化测试只验证构建产物、变量和 `updateJob` Action；它不代表真实设备已经验证成功。
 

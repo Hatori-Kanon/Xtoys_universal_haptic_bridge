@@ -170,6 +170,8 @@
       try {
         outputAdapter.applySlot(actuatorSlot(slot), copyTransition(transition));
       } catch (error) {
+        lastSlots[slot.id] = copySlot(slot);
+        delete lastTuples[slot.id];
         reportCallError(slot.id, error);
         return { changed: false, completed: false };
       }

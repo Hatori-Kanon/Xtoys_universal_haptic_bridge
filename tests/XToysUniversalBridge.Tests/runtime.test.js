@@ -689,6 +689,119 @@ test('a thrown rotation replacement stays uncompleted until a later successful p
   assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[3].phase, 'target');
 });
 
+test('failed shared-slot rotation replacement reasserts the previous winner with its rise', function () {
+  var failReplacement = false;
+  var physical = { value: 0, direction: null, rampSeconds: 0 };
+  var subject = createSubject(1000, function (slot, transition) {
+    if (slot.id !== 3) {
+      return;
+    }
+    physical.value = slot.value;
+    physical.direction = slot.direction;
+    physical.rampSeconds = transition.rampSeconds;
+    if (failReplacement) {
+      failReplacement = false;
+      throw new Error('partial shared-slot replacement');
+    }
+  });
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'older-clitoris-clockwise', sequence: 1,
+    targets: [target('clitoris', {
+      intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise',
+      durationMs: 1000, rampUpMs: 120, rampDownMs: 220, priority: 10
+    })]
+  }));
+  failReplacement = true;
+  subject.loaded.setNow(1050);
+  subject.runtime.handle(payload('play', {
+    eventId: 'newer-vagina-counterclockwise', sequence: 1,
+    targets: [target('vagina', {
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'counterclockwise',
+      durationMs: 500, rampUpMs: 40, rampDownMs: 500, priority: 20
+    })]
+  }));
+  assert.equal(physical.direction, 'counterclockwise');
+
+  subject.calls.length = 0;
+  subject.loaded.setNow(1100);
+  subject.runtime.handle(payload('stop', {
+    eventId: 'newer-vagina-counterclockwise'
+  }));
+
+  assert.equal(callsFor(subject, 3).length, 1);
+  assert.equal(lastCall(subject, 3).slot.value, 30);
+  assert.equal(lastCall(subject, 3).slot.direction, 'clockwise');
+  assert.equal(lastCall(subject, 3).transition.rampSeconds, 0.12);
+  assert.deepEqual(physical, {
+    value: 30, direction: 'clockwise', rampSeconds: 0.12
+  });
+});
+
+test('failed opposite texture replacement expires to zero with the departing ramp down', function () {
+  var failReplacement = false;
+  var physical = { value: 0, direction: null, rampSeconds: 0 };
+  var subject = createSubject(1000, function (slot, transition) {
+    if (slot.id !== 3) {
+      return;
+    }
+    physical.value = slot.value;
+    physical.direction = slot.direction;
+    physical.rampSeconds = transition.rampSeconds;
+    if (failReplacement) {
+      failReplacement = false;
+      throw new Error('partial texture replacement');
+    }
+  });
+  var textureKey = JSON.stringify(['runtime-test', 'vagina']);
+
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-texture-1', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 40, rotateDirection: 'clockwise',
+      durationMs: 1000, rampDownMs: 80
+    }))]
+  }));
+  subject.loaded.setNow(1100);
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-texture-2', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 60, rotateDirection: 'clockwise',
+      durationMs: 1000, rampDownMs: 80
+    }))]
+  }));
+  assert.equal(subject.runtime.hapticSnapshot().cadenceRecords[textureKey].mode,
+    'texture');
+
+  failReplacement = true;
+  subject.calls.length = 0;
+  subject.loaded.setNow(1150);
+  subject.runtime.handle(payload('play', {
+    eventId: 'counterclockwise-texture', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'counterclockwise',
+      durationMs: 200, rampUpMs: 90, rampDownMs: 500
+    }))]
+  }));
+  assert.equal(subject.runtime.hapticSnapshot().cadenceRecords[textureKey].mode,
+    'texture');
+  assert.equal(callsFor(subject, 3).length, 1);
+  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(physical.direction, 'counterclockwise');
+
+  subject.loaded.setNow(1350);
+  subject.runtime.tick();
+
+  assert.equal(callsFor(subject, 3).length, 2);
+  assert.equal(lastCall(subject, 3).slot.value, 0);
+  assert.equal(lastCall(subject, 3).slot.direction, null);
+  assert.equal(lastCall(subject, 3).transition.rampSeconds, 0.5);
+  assert.deepEqual(physical, { value: 0, direction: null, rampSeconds: 0.5 });
+  assert.deepEqual(callsFor(subject, 3).map(function (call) {
+    return call.slot.direction;
+  }), ['counterclockwise', null]);
+});
+
 test('same-direction rotation changes speed without an intermediate zero', function () {
   var subject = createSubject(1000);
   subject.runtime.handle(payload('play', {

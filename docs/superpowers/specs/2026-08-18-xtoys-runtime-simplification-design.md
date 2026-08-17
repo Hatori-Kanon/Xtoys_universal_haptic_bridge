@@ -52,7 +52,7 @@ direction
 rampSeconds
 ```
 
-This tuple exists only to suppress duplicate calls. It is updated only after all four `setVariable(...)` calls and the final `callAction(...)` return without a synchronous exception.
+This tuple exists only to suppress duplicate calls. It is updated only after all four `setVariable(...)` calls and the final `callAction(...)` return without a synchronous exception. If a call throws, the cache is invalidated rather than replaced with the failed tuple: earlier variable writes or the Job start may already have taken effect, so the prior tuple is no longer safe evidence for suppressing the next latest-state call.
 
 `rampSeconds` remains part of equality. The same target may arrive while an earlier physical ramp is still in progress, and a changed ramp parameter may need another Job start. Logical winner metadata is maintained separately from this primitive tuple.
 
@@ -141,7 +141,7 @@ The adapter writes all four variables and then calls:
 {"type":"updateJob","job":"xthb-output-NN","action":"start"}
 ```
 
-The variable writes and Job start are not transactional. If any call throws after earlier variables were written, the runtime does not update the slot's last tuple. The next pass writes a complete tuple calculated from the then-current logical state.
+The variable writes and Job start are not transactional. If any call throws after earlier variables were written, the runtime does not store the failed tuple and invalidates that slot's duplicate-suppression cache. It still records the latest resolved slot as logical transition history. The next pass therefore writes a complete tuple calculated from the then-current logical state, using the latest winner transition rather than the winner that preceded the throw.
 
 Each enabled slot is wrapped independently. One slot throwing must not prevent later slots from being calculated and called in the same pass.
 
@@ -153,9 +153,9 @@ For each slot:
 2. compare the four-field tuple with the last completed tuple;
 3. if changed, attempt the XToys calls inside a per-slot `try/catch`;
 4. on normal return, update the last tuple;
-5. on throw, leave the last tuple unchanged and log `xtoys_call_error` with the slot ID and exception detail.
+5. on throw, record the latest resolved slot as logical transition history, invalidate the last-tuple duplicate cache, and log `xtoys_call_error` with the slot ID and exception detail; do not store the failed tuple.
 
-There is no explicit retry queue. On the next handle/tick pass, the runtime recalculates the newest correct output. This may naturally attempt the same tuple again if it is still current, but an obsolete attack, direction, floor, or texture phase is never replayed merely because it previously threw.
+There is no explicit retry queue. On the next handle/tick pass, the runtime recalculates the newest correct output and, because the duplicate cache was invalidated, attempts that complete current tuple. An obsolete attack, direction, floor, or texture phase is never replayed merely because it previously threw.
 
 If `callAction(...)` starts a Job and then throws, the next pass may start that latest Job again. Without an XToys/device acknowledgement API, duplicate latest-state application is safer and more honest than pretending to know what occurred.
 
@@ -272,4 +272,4 @@ Existing universal XToys templates do not need new per-game Jobs. Migration cons
 5. retain the scheduler, sixteen output Job names, Initial zero Actions, and Final zero Actions;
 6. use the new three-argument manual helper when testing rotation slots.
 
-Configuration editing continues through XToys' existing stop-edit-start workflow; the bridge adds no second lifecycle on top of it.
+XToys itself exposes configuration editing only while the Script is stopped; the bridge adds no second lifecycle or runtime reload behavior on top of that native constraint.
