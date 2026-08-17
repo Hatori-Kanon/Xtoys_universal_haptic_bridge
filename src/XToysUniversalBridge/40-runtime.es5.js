@@ -264,7 +264,6 @@
         transition = replacementRampSeconds(previous, slot, winnerChanged,
           effectiveRiseMs);
         if (transition !== null) {
-          envelope.phase = 'target';
           return {
             slot: slot,
             transition: { rampSeconds: transition },
@@ -277,7 +276,6 @@
           };
         }
         if (restored) {
-          envelope.phase = 'target';
           return {
             slot: slot,
             transition: { rampSeconds: envelope.riseMs / 1000 },

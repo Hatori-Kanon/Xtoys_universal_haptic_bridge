@@ -2101,7 +2101,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         transition = replacementRampSeconds(previous, slot, winnerChanged,
           effectiveRiseMs);
         if (transition !== null) {
-          envelope.phase = 'target';
           return {
             slot: slot,
             transition: { rampSeconds: transition },
@@ -2114,7 +2113,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
           };
         }
         if (restored) {
-          envelope.phase = 'target';
           return {
             slot: slot,
             transition: { rampSeconds: envelope.riseMs / 1000 },

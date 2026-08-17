@@ -659,6 +659,36 @@ test('opposite rotation attack immediately adopts the new direction and effectiv
   assert.equal(Math.abs(call.transition.rampSeconds - 0.11333333333333334) < 1e-12, true);
 });
 
+test('a thrown rotation replacement stays uncompleted until a later successful pass', function () {
+  var failReplacement = false;
+  var subject = createSubject(1000, function (slot) {
+    if (failReplacement && slot.id === 3) {
+      failReplacement = false;
+      throw new Error('rotation replacement failed');
+    }
+  });
+  subject.runtime.handle(payload('play', {
+    eventId: 'clockwise-first', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 80, rotateDirection: 'clockwise'
+    }))]
+  }));
+  failReplacement = true;
+  subject.loaded.setNow(1400);
+  subject.runtime.handle(payload('play', {
+    eventId: 'counterclockwise-replacement', sequence: 1,
+    targets: [target('vagina', adaptiveValues({
+      intensity: 0, rotateSpeed: 40, rotateDirection: 'counterclockwise'
+    }))]
+  }));
+
+  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[3].phase, 'rise');
+  subject.runtime.tick();
+  assert.equal(lastCall(subject, 3).slot.direction, 'counterclockwise');
+  assert.equal(subject.runtime.hapticSnapshot().slotEnvelopes[3].phase, 'target');
+});
+
 test('same-direction rotation changes speed without an intermediate zero', function () {
   var subject = createSubject(1000);
   subject.runtime.handle(payload('play', {
