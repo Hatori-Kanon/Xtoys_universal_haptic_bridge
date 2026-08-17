@@ -1849,35 +1849,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       value: tuple.value,
       frequency: tuple.frequency,
       direction: tuple.direction,
-      generation: tuple.generation,
       rampSeconds: tuple.rampSeconds
     };
-  }
-
-  function copyToken(token) {
-    return {
-      slotId: token.slotId,
-      ownerKey: token.ownerKey,
-      ownerGeneration: token.ownerGeneration,
-      phase: token.phase
-    };
-  }
-
-  function copyFailure(failure) {
-    return {
-      slotId: failure.slotId,
-      code: failure.code,
-      detail: failure.detail
-    };
-  }
-
-  function copyFailures(failures) {
-    var copied = [];
-    var index;
-    for (index = 0; index < failures.length; index += 1) {
-      copied.push(copyFailure(failures[index]));
-    }
-    return copied;
   }
 
   function copySlot(slot) {
@@ -1909,8 +1882,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       id: slot.id,
       value: slot.value,
       frequency: slot.frequency,
-      direction: slot.direction,
-      generation: slot.generation
+      direction: slot.direction
     };
   }
 
@@ -1922,8 +1894,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     return {
       value: slot.value,
       frequency: slot.frequency,
-      direction: normalizedDirection(slot.direction),
-      generation: slot.generation
+      direction: normalizedDirection(slot.direction)
     };
   }
 
@@ -1999,12 +1970,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     var engine;
     var lastSlots = {};
     var lastTuples = {};
-    var pendingDispatches = {};
-    var hapticPendingDispatches = {};
-    var resyncPendingDispatches = {};
-    var generationFloors = {};
     var slotEnvelopes = {};
-    var recentFailures = [];
     var runtime = {};
 
     if (!validation.ok) {
@@ -2016,50 +1982,42 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     normalizedConfig = validation.config;
     engine = ns.createStateEngine();
 
+    function reportCallError(slotId, error) {
+      if (typeof outputAdapter.log !== 'function') {
+        return;
+      }
+      try {
+        outputAdapter.log({
+          type: 'xtoys_call_error',
+          slotId: slotId,
+          detail: error && error.message !== undefined ? String(error.message) : String(error)
+        });
+      } catch (ignored) {
+        /* Logging cannot block another output slot. */
+      }
+    }
+
     function apply(slot, transition, force) {
       var tuple = coreTuple(slot);
-      var physicalSlot = actuatorSlot(slot);
-      var failure;
       tuple.rampSeconds = transition.rampSeconds;
-      if (!force && pendingDispatches[slot.id] === undefined && sameTuple(lastTuples[slot.id], tuple)) {
+      if (!force && sameTuple(lastTuples[slot.id], tuple)) {
         lastSlots[slot.id] = copySlot(slot);
-        return { changed: false, failure: null };
+        return { changed: false, completed: true };
       }
-      if (generationFloors[slot.id] === undefined) {
-        generationFloors[slot.id] = physicalSlot.generation;
-      } else {
-        physicalSlot.generation = Math.max(physicalSlot.generation, generationFloors[slot.id] + 1);
-        generationFloors[slot.id] = physicalSlot.generation;
-      }
-      tuple.generation = physicalSlot.generation;
       try {
-        outputAdapter.applySlot(physicalSlot, copyTransition(transition));
+        outputAdapter.applySlot(actuatorSlot(slot), copyTransition(transition));
       } catch (error) {
-        failure = {
-          slotId: slot.id,
-          code: 'adapter_apply_failed',
-          detail: error && error.message !== undefined ? String(error.message) : String(error)
-        };
-        pendingDispatches[slot.id] = {
-          slot: copySlot(slot),
-          tuple: copyTuple(tuple),
-          transition: copyTransition(transition)
-        };
-        return { changed: false, failure: failure };
+        reportCallError(slot.id, error);
+        return { changed: false, completed: false };
       }
       lastTuples[slot.id] = copyTuple(tuple);
       lastSlots[slot.id] = copySlot(slot);
-      delete pendingDispatches[slot.id];
-      return { changed: true, failure: null };
+      return { changed: true, completed: true };
     }
 
     function transitionFor(slot, expiredParts) {
-      var pending = pendingDispatches[slot.id];
       var previous = lastSlots[slot.id];
       var winnerChanged = resolvedWinnerKey(previous) !== resolvedWinnerKey(slot);
-      if (pending !== undefined && sameActuator(pending.tuple, coreTuple(slot))) {
-        return copyTransition(pending.transition);
-      }
       return {
         rampSeconds: rampSeconds(previous, slot, lastTuples[slot.id],
           expiredParts, winnerChanged, slot.rampUpMs)
@@ -2106,7 +2064,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
     function prepareHapticSlot(slot, atMs) {
       var key = foregroundKey(slot);
       var envelope = slotEnvelopes[slot.id];
-      var pending = hapticPendingDispatches[slot.id];
       var previous = lastSlots[slot.id];
       var winner = slot.foregroundWinner;
       var winnerChanged = resolvedWinnerKey(previous) !== resolvedWinnerKey(slot);
@@ -2119,12 +2076,10 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
       if (key === null) {
         delete slotEnvelopes[slot.id];
-        delete hapticPendingDispatches[slot.id];
         return { slot: slot, transition: null, token: null };
       }
 
       if (envelope === undefined || envelope.ownerKey !== key) {
-        delete hapticPendingDispatches[slot.id];
         plan = ns.envelopePlan(winner.target, winner.cadence);
         restored = restoresOlderForeground(previous, winner);
         effectiveRiseMs = restored
@@ -2140,9 +2095,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
           riseMs: effectiveRiseMs,
           textureStartedAt: winner.cadence.mode === 'texture'
             ? winner.cadence.textureStartedAt : null,
-          pendingTexturePhase: null,
-          pendingTextureSlot: null,
-          pendingTextureTransition: null,
           restoredOwner: restored
         };
         slotEnvelopes[slot.id] = envelope;
@@ -2214,18 +2166,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
           !(envelope.phase === 'fall' &&
             (!envelope.floorApplied || atMs < envelope.riseAt))) {
         envelope.textureStartedAt = winner.cadence.textureStartedAt;
-        if (envelope.pendingTextureSlot !== null) {
-          return {
-            slot: copySlot(envelope.pendingTextureSlot),
-            transition: copyTransition(envelope.pendingTextureTransition),
-            token: {
-              slotId: slot.id,
-              ownerKey: key,
-              ownerGeneration: envelope.ownerGeneration,
-              phase: envelope.pendingTexturePhase
-            }
-          };
-        }
         targetPhase = ns.textureTargetPhase(winner.cadence, atMs);
         physical = copySlot(slot);
         if (!targetPhase) {
@@ -2239,9 +2179,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
             ? winner.target.retrigger.minRampUpMs
             : winner.target.retrigger.minRampDownMs) / 1000
         };
-        envelope.pendingTexturePhase = targetPhase ? 'target' : 'floor';
-        envelope.pendingTextureSlot = copySlot(physical);
-        envelope.pendingTextureTransition = copyTransition(transition);
         return {
           slot: physical,
           transition: transition,
@@ -2249,17 +2186,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
             slotId: slot.id,
             ownerKey: key,
             ownerGeneration: envelope.ownerGeneration,
-            phase: envelope.pendingTexturePhase
+            phase: targetPhase ? 'target' : 'floor'
           }
-        };
-      }
-
-      if (pending !== undefined && pending.ownerKey === key &&
-          pending.ownerGeneration === envelope.ownerGeneration) {
-        return {
-          slot: copySlot(pending.slot),
-          transition: copyTransition(pending.transition),
-          token: copyToken(pending.token)
         };
       }
       if (envelope.phase === 'fall' && envelope.floorApplied &&
@@ -2303,61 +2231,15 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       };
     }
 
-    function confirmHapticDispatch(token, atMs) {
+    function completeHapticPhase(token, atMs) {
       var envelope = slotEnvelopes[token.slotId];
       if (envelope !== undefined && envelope.ownerKey === token.ownerKey &&
           envelope.ownerGeneration === token.ownerGeneration) {
-        if (envelope.pendingTextureSlot !== null &&
-            envelope.pendingTexturePhase === token.phase) {
-          envelope.pendingTexturePhase = null;
-          envelope.pendingTextureSlot = null;
-          envelope.pendingTextureTransition = null;
-          envelope.phase = token.phase;
-        } else if (token.phase === 'fall' && !envelope.floorApplied) {
+        if (token.phase === 'fall' && !envelope.floorApplied) {
           envelope.floorApplied = true;
           envelope.riseAt = atMs + envelope.fallMs;
-        } else if (token.phase === 'target') {
-          envelope.phase = 'target';
-        }
-      }
-    }
-
-    function retainHapticFailure(prepared) {
-      var token = prepared.token;
-      var envelope = slotEnvelopes[token.slotId];
-      if (envelope !== undefined && envelope.ownerKey === token.ownerKey &&
-          envelope.ownerGeneration === token.ownerGeneration &&
-          envelope.pendingTextureSlot !== null) {
-        return;
-      }
-      hapticPendingDispatches[token.slotId] = {
-        ownerKey: token.ownerKey,
-        ownerGeneration: token.ownerGeneration,
-        phase: token.phase,
-        slot: copySlot(prepared.slot),
-        transition: copyTransition(prepared.transition),
-        token: copyToken(token)
-      };
-    }
-
-    function dispatchResult(changedSlots, failures) {
-      return { changedSlots: changedSlots, failures: failures };
-    }
-
-    function reportFailures(failures) {
-      var index;
-      var logEntry;
-      recentFailures = copyFailures(failures);
-      if (typeof outputAdapter.log !== 'function') {
-        return;
-      }
-      for (index = 0; index < failures.length; index += 1) {
-        logEntry = copyFailure(failures[index]);
-        logEntry.type = 'dispatch_error';
-        try {
-          outputAdapter.log(logEntry);
-        } catch (ignored) {
-          /* Logging cannot prevent best-effort physical dispatch progress. */
+        } else if (token.phase === 'target' || token.phase === 'floor') {
+          envelope.phase = token.phase;
         }
       }
     }
@@ -2370,42 +2252,23 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var transition;
       var applied;
       var changed = 0;
-      var failures = [];
       for (index = 0; index < slots.length; index += 1) {
         slot = slots[index];
         if (slot.enabled) {
-          if (resyncPendingDispatches[slot.id] !== undefined) {
-            prepared = {
-              slot: copySlot(resyncPendingDispatches[slot.id].slot),
-              transition: copyTransition(resyncPendingDispatches[slot.id].transition),
-              token: null,
-              resync: true
-            };
-          } else {
-            prepared = prepareHapticSlot(slot, atMs);
-          }
+          prepared = prepareHapticSlot(slot, atMs);
           transition = prepared.transition === null
             ? transitionFor(prepared.slot, expiredParts)
             : prepared.transition;
-          applied = apply(prepared.slot, transition, prepared.resync === true);
-          if (prepared.resync === true && applied.failure === null) {
-            delete resyncPendingDispatches[slot.id];
-          }
-          if (applied.failure === null && prepared.token !== null) {
-            delete hapticPendingDispatches[slot.id];
-            confirmHapticDispatch(prepared.token, atMs);
-          } else if (applied.failure !== null && prepared.token !== null) {
-            retainHapticFailure(prepared);
+          applied = apply(prepared.slot, transition, false);
+          if (applied.completed && prepared.token !== null) {
+            completeHapticPhase(prepared.token, atMs);
           }
           if (applied.changed) {
             changed += 1;
           }
-          if (applied.failure !== null) {
-            failures.push(applied.failure);
-          }
         }
       }
-      return dispatchResult(changed, failures);
+      return { changedSlots: changed };
     }
 
     function preview(message, atMs) {
@@ -2440,8 +2303,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         stopped = runtime.stopAll();
         return {
           ok: true,
-          changedSlots: stopped,
-          dispatchFailures: copyFailures(recentFailures)
+          changedSlots: stopped
         };
       }
       applied = engine.applyMessage(parsed.message, atMs, false);
@@ -2457,17 +2319,14 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         return {
           ok: true,
           changed: false,
-          changedSlots: 0,
-          dispatchFailures: []
+          changedSlots: 0
         };
       }
       dispatched = dispatch(atMs, expired.changedParts);
-      reportFailures(dispatched.failures);
       return {
         ok: true,
         changed: applied.changed || expired.changed,
-        changedSlots: dispatched.changedSlots,
-        dispatchFailures: copyFailures(dispatched.failures)
+        changedSlots: dispatched.changedSlots
       };
     };
 
@@ -2475,7 +2334,6 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var atMs = now();
       var expired = engine.expire(atMs, false);
       var dispatched = dispatch(atMs, expired.changedParts);
-      reportFailures(dispatched.failures);
       return dispatched.changedSlots;
     };
 
@@ -2486,10 +2344,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       var index;
       var applied;
       var changed = 0;
-      var failures = [];
       slotEnvelopes = {};
-      hapticPendingDispatches = {};
-      resyncPendingDispatches = {};
       engine.clearAll(false);
       slots = ns.computeSlots(engine.snapshot(), normalizedConfig, atMs);
       for (index = 0; index < slots.length; index += 1) {
@@ -2502,12 +2357,8 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
           if (applied.changed) {
             changed += 1;
           }
-          if (applied.failure !== null) {
-            failures.push(applied.failure);
-          }
         }
       }
-      reportFailures(failures);
       return changed;
     };
 
@@ -2524,72 +2375,11 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
       };
     };
 
-    runtime.recentFailures = function () {
-      return copy(recentFailures);
-    };
-
     runtime.invalidateSlot = function (slotId) {
       if (typeof slotId !== 'number' || !isFinite(slotId) || slotId % 1 !== 0 || slotId < 1 || slotId > 16) {
         throw new Error('Runtime slot ID must be an integer from 1 through 16.');
       }
       delete lastTuples[slotId];
-    };
-
-    runtime.reserveSlotGeneration = function (slotId) {
-      var generation = 0;
-      if (typeof slotId !== 'number' || !isFinite(slotId) || slotId % 1 !== 0 || slotId < 1 || slotId > 16) {
-        throw new Error('Runtime slot ID must be an integer from 1 through 16.');
-      }
-      if (generationFloors[slotId] !== undefined) {
-        generation = Math.max(generation, generationFloors[slotId]);
-      }
-      if (lastTuples[slotId] !== undefined) {
-        generation = Math.max(generation, lastTuples[slotId].generation);
-      }
-      if (pendingDispatches[slotId] !== undefined) {
-        generation = Math.max(generation, pendingDispatches[slotId].tuple.generation);
-      }
-      if (lastSlots[slotId] !== undefined) {
-        generation = Math.max(generation, lastSlots[slotId].generation);
-      }
-      generation += 1;
-      generationFloors[slotId] = generation;
-      delete lastTuples[slotId];
-      return generation;
-    };
-
-    runtime.forceResync = function () {
-      var atMs = now();
-      var slots = ns.computeSlots(engine.readState(), normalizedConfig, atMs);
-      var index;
-      var slot;
-      var pending;
-      var physical;
-      var transition;
-      for (index = 0; index < slots.length; index += 1) {
-        slot = slots[index];
-        if (slot.enabled && resyncPendingDispatches[slot.id] === undefined) {
-          pending = pendingDispatches[slot.id];
-          if (pending !== undefined) {
-            physical = copySlot(pending.slot);
-            transition = copyTransition(pending.transition);
-          } else if (lastSlots[slot.id] !== undefined) {
-            physical = copySlot(lastSlots[slot.id]);
-            transition = {
-              rampSeconds: lastTuples[slot.id] === undefined
-                ? 0 : lastTuples[slot.id].rampSeconds
-            };
-          } else {
-            physical = copySlot(slot);
-            transition = { rampSeconds: 0 };
-          }
-          resyncPendingDispatches[slot.id] = {
-            slot: physical,
-            transition: transition
-          };
-        }
-      }
-      return runtime.tick();
     };
 
     return runtime;
@@ -2633,7 +2423,7 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
 
   ns.createXToysAdapter = function (logLevel) {
     var level = logLevel === 'off' || logLevel === 'debug' ? logLevel : 'errors';
-    var successfulApplies = 0;
+    var completedCalls = 0;
     var adapter = {
       applySlot: function (slot, transition) {
         var suffix = slotSuffix(slot.id);
@@ -2641,12 +2431,11 @@ var XTHB = typeof XTHB === 'undefined' ? {} : XTHB;
         setVariable('xthb-slot-' + suffix + '-frequency', slot.frequency);
         setVariable('xthb-slot-' + suffix + '-ramp-seconds', transition.rampSeconds);
         setVariable('xthb-slot-' + suffix + '-direction-code', directionCode(slot.direction));
-        setVariable('xthb-slot-' + suffix + '-generation', slot.generation);
         callAction({ type: 'updateJob', job: 'xthb-output-' + suffix, action: 'start' });
-        successfulApplies += 1;
-        if (level === 'debug' && successfulApplies >= 100) {
-          safeConsoleLog('XTHB debug: ' + successfulApplies + ' successful slot updates.');
-          successfulApplies = 0;
+        completedCalls += 1;
+        if (level === 'debug' && completedCalls >= 100) {
+          safeConsoleLog('XTHB debug: 100 XToys slot calls completed without exception.');
+          completedCalls = 0;
         }
       },
       log: function (entry) {
@@ -2665,15 +2454,12 @@ var xtoysBridgeInit;
 var xtoysBridgeHandle;
 var xtoysBridgeTick;
 var xtoysBridgeStopAll;
-var xtoysBridgeReloadConfig;
 var xtoysBridgeTestSlot;
 
 (function (ns) {
   var runtime = null;
   var adapter = null;
   var config = null;
-  var stopped = true;
-  var stopRetryPending = false;
 
   ns.MODULE_GLOBAL_ENTRY = true;
 
@@ -2691,9 +2477,12 @@ var xtoysBridgeTestSlot;
     return error && error.message !== undefined ? String(error.message) : String(error);
   }
 
-  function reportError(type, error, targetAdapter) {
+  function reportError(type, error, targetAdapter, slotId) {
     var outputAdapter = targetAdapter || adapter;
     var entry = { type: type, detail: errorDetail(error) };
+    if (slotId !== undefined) {
+      entry.slotId = slotId;
+    }
     if (outputAdapter !== null && typeof outputAdapter.log === 'function') {
       try {
         outputAdapter.log(entry);
@@ -2730,24 +2519,6 @@ var xtoysBridgeTestSlot;
     };
   }
 
-  function zeroSlot(outputAdapter, slotId, generation) {
-    outputAdapter.applySlot({
-      id: slotId,
-      value: 0,
-      frequency: 0,
-      direction: null,
-      generation: generation
-    }, { rampSeconds: 0 });
-  }
-
-  function enabledSlot(configuration, slotId) {
-    return configuration !== null && configuration.slots[slotId - 1].enabled;
-  }
-
-  function hasRecentFailures(targetRuntime) {
-    return targetRuntime.recentFailures().length > 0;
-  }
-
   function finiteNumber(value) {
     var numeric;
     if (typeof value === 'number') {
@@ -2760,62 +2531,33 @@ var xtoysBridgeTestSlot;
     return isFinite(numeric) ? { ok: true, value: numeric } : { ok: false };
   }
 
-  function installCandidate(candidate) {
-    var slotId;
-    if (config !== null) {
-      for (slotId = 1; slotId <= 16; slotId += 1) {
-        if (enabledSlot(config, slotId) && !enabledSlot(candidate.config, slotId)) {
-          zeroSlot(candidate.adapter, slotId, 0);
-        }
-      }
+  function manualDirection(slot, value, direction) {
+    if (slot.type !== 'rotation') {
+      return { ok: true, value: null };
     }
-    candidate.runtime.stopAll();
-    runtime = candidate.runtime;
-    adapter = candidate.adapter;
-    config = candidate.config;
-    stopRetryPending = hasRecentFailures(runtime);
-    stopped = !stopRetryPending;
-  }
-
-  function restoreActiveRuntime(wasStopped, wasStopRetryPending) {
-    if (runtime === null) {
-      return;
+    if (value === 0 && (direction === undefined || direction === null || direction === '')) {
+      return { ok: true, value: null };
     }
-    try {
-      runtime.forceResync();
-      if (hasRecentFailures(runtime)) {
-        stopped = false;
-        stopRetryPending = wasStopped || wasStopRetryPending;
-      } else {
-        stopped = wasStopped || wasStopRetryPending;
-        stopRetryPending = false;
-      }
-    } catch (error) {
-      stopped = false;
-      stopRetryPending = false;
-      reportError('runtime_error', error, adapter);
+    if (direction === 'clockwise' || direction === 'counterclockwise') {
+      return { ok: true, value: direction };
     }
-  }
-
-  function initialize() {
-    var candidate;
-    var wasStopped = stopped;
-    var wasStopRetryPending = stopRetryPending;
-    try {
-      candidate = readCandidate();
-      installCandidate(candidate);
-      return 1;
-    } catch (error) {
-      if (candidate !== undefined) {
-        restoreActiveRuntime(wasStopped, wasStopRetryPending);
-      }
-      reportError('config_error', error, candidate === undefined ? null : candidate.adapter);
-      return 0;
-    }
+    return { ok: false, value: null };
   }
 
   xtoysBridgeInit = function () {
-    return initialize();
+    var candidate;
+    try {
+      candidate = readCandidate();
+      candidate.runtime.stopAll();
+      runtime = candidate.runtime;
+      adapter = candidate.adapter;
+      config = candidate.config;
+      return 1;
+    } catch (error) {
+      reportError('config_error', error,
+        candidate === undefined ? null : candidate.adapter);
+      return 0;
+    }
   };
 
   xtoysBridgeHandle = function (payloadText) {
@@ -2829,15 +2571,6 @@ var xtoysBridgeTestSlot;
         adapter.log({ type: 'input_error', code: result.code, detail: result.detail });
         return 0;
       }
-      if (result.preview === undefined) {
-        if (result.changed === undefined && result.dispatchFailures !== undefined) {
-          stopRetryPending = result.dispatchFailures.length > 0;
-          stopped = !stopRetryPending;
-        } else if (result.changed === true || result.changedSlots > 0) {
-          stopped = false;
-          stopRetryPending = false;
-        }
-      }
       return 1;
     } catch (error) {
       reportError('runtime_error', error, adapter);
@@ -2846,17 +2579,11 @@ var xtoysBridgeTestSlot;
   };
 
   xtoysBridgeTick = function () {
-    var changed;
     if (runtime === null) {
       return 0;
     }
     try {
-      changed = runtime.tick();
-      if (stopRetryPending) {
-        stopRetryPending = hasRecentFailures(runtime);
-        stopped = !stopRetryPending;
-      }
-      return changed;
+      return runtime.tick();
     } catch (error) {
       reportError('runtime_error', error, adapter);
       return 0;
@@ -2864,32 +2591,24 @@ var xtoysBridgeTestSlot;
   };
 
   xtoysBridgeStopAll = function () {
-    var changed;
-    if (runtime === null || stopped) {
+    if (runtime === null) {
       return 0;
     }
     try {
-      changed = stopRetryPending ? runtime.tick() : runtime.stopAll();
-      stopRetryPending = hasRecentFailures(runtime);
-      stopped = !stopRetryPending;
-      return changed;
+      return runtime.stopAll();
     } catch (error) {
       reportError('runtime_error', error, adapter);
       return 0;
     }
   };
 
-  xtoysBridgeReloadConfig = function () {
-    return initialize();
-  };
-
-  xtoysBridgeTestSlot = function (slotId, value) {
+  xtoysBridgeTestSlot = function (slotId, value, direction) {
     var parsedSlot = finiteNumber(slotId);
     var parsedValue = finiteNumber(value);
     var numericSlot;
     var numericValue;
     var selected;
-    var generation;
+    var parsedDirection;
     if (runtime === null || !parsedSlot.ok || !parsedValue.ok) {
       return 0;
     }
@@ -2902,22 +2621,21 @@ var xtoysBridgeTestSlot;
     if (!selected.enabled || selected.id !== numericSlot) {
       return 0;
     }
-    generation = runtime.reserveSlotGeneration(numericSlot);
+    parsedDirection = manualDirection(selected, numericValue, direction);
+    if (!parsedDirection.ok) {
+      return 0;
+    }
+    runtime.invalidateSlot(numericSlot);
     try {
       adapter.applySlot({
         id: numericSlot,
         value: ns.clamp(numericValue, 0, 100),
         frequency: 0,
-        direction: null,
-        generation: generation
+        direction: parsedDirection.value
       }, { rampSeconds: 0 });
-      stopped = false;
-      stopRetryPending = false;
       return 1;
     } catch (error) {
-      stopped = false;
-      stopRetryPending = false;
-      reportError('adapter_apply_error', error, adapter);
+      reportError('xtoys_call_error', error, adapter, numericSlot);
       return 0;
     }
   };

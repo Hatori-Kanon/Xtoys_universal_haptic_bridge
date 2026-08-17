@@ -2,15 +2,12 @@ var xtoysBridgeInit;
 var xtoysBridgeHandle;
 var xtoysBridgeTick;
 var xtoysBridgeStopAll;
-var xtoysBridgeReloadConfig;
 var xtoysBridgeTestSlot;
 
 (function (ns) {
   var runtime = null;
   var adapter = null;
   var config = null;
-  var stopped = true;
-  var stopRetryPending = false;
 
   ns.MODULE_GLOBAL_ENTRY = true;
 
@@ -28,9 +25,12 @@ var xtoysBridgeTestSlot;
     return error && error.message !== undefined ? String(error.message) : String(error);
   }
 
-  function reportError(type, error, targetAdapter) {
+  function reportError(type, error, targetAdapter, slotId) {
     var outputAdapter = targetAdapter || adapter;
     var entry = { type: type, detail: errorDetail(error) };
+    if (slotId !== undefined) {
+      entry.slotId = slotId;
+    }
     if (outputAdapter !== null && typeof outputAdapter.log === 'function') {
       try {
         outputAdapter.log(entry);
@@ -67,24 +67,6 @@ var xtoysBridgeTestSlot;
     };
   }
 
-  function zeroSlot(outputAdapter, slotId, generation) {
-    outputAdapter.applySlot({
-      id: slotId,
-      value: 0,
-      frequency: 0,
-      direction: null,
-      generation: generation
-    }, { rampSeconds: 0 });
-  }
-
-  function enabledSlot(configuration, slotId) {
-    return configuration !== null && configuration.slots[slotId - 1].enabled;
-  }
-
-  function hasRecentFailures(targetRuntime) {
-    return targetRuntime.recentFailures().length > 0;
-  }
-
   function finiteNumber(value) {
     var numeric;
     if (typeof value === 'number') {
@@ -97,62 +79,33 @@ var xtoysBridgeTestSlot;
     return isFinite(numeric) ? { ok: true, value: numeric } : { ok: false };
   }
 
-  function installCandidate(candidate) {
-    var slotId;
-    if (config !== null) {
-      for (slotId = 1; slotId <= 16; slotId += 1) {
-        if (enabledSlot(config, slotId) && !enabledSlot(candidate.config, slotId)) {
-          zeroSlot(candidate.adapter, slotId, 0);
-        }
-      }
+  function manualDirection(slot, value, direction) {
+    if (slot.type !== 'rotation') {
+      return { ok: true, value: null };
     }
-    candidate.runtime.stopAll();
-    runtime = candidate.runtime;
-    adapter = candidate.adapter;
-    config = candidate.config;
-    stopRetryPending = hasRecentFailures(runtime);
-    stopped = !stopRetryPending;
-  }
-
-  function restoreActiveRuntime(wasStopped, wasStopRetryPending) {
-    if (runtime === null) {
-      return;
+    if (value === 0 && (direction === undefined || direction === null || direction === '')) {
+      return { ok: true, value: null };
     }
-    try {
-      runtime.forceResync();
-      if (hasRecentFailures(runtime)) {
-        stopped = false;
-        stopRetryPending = wasStopped || wasStopRetryPending;
-      } else {
-        stopped = wasStopped || wasStopRetryPending;
-        stopRetryPending = false;
-      }
-    } catch (error) {
-      stopped = false;
-      stopRetryPending = false;
-      reportError('runtime_error', error, adapter);
+    if (direction === 'clockwise' || direction === 'counterclockwise') {
+      return { ok: true, value: direction };
     }
-  }
-
-  function initialize() {
-    var candidate;
-    var wasStopped = stopped;
-    var wasStopRetryPending = stopRetryPending;
-    try {
-      candidate = readCandidate();
-      installCandidate(candidate);
-      return 1;
-    } catch (error) {
-      if (candidate !== undefined) {
-        restoreActiveRuntime(wasStopped, wasStopRetryPending);
-      }
-      reportError('config_error', error, candidate === undefined ? null : candidate.adapter);
-      return 0;
-    }
+    return { ok: false, value: null };
   }
 
   xtoysBridgeInit = function () {
-    return initialize();
+    var candidate;
+    try {
+      candidate = readCandidate();
+      candidate.runtime.stopAll();
+      runtime = candidate.runtime;
+      adapter = candidate.adapter;
+      config = candidate.config;
+      return 1;
+    } catch (error) {
+      reportError('config_error', error,
+        candidate === undefined ? null : candidate.adapter);
+      return 0;
+    }
   };
 
   xtoysBridgeHandle = function (payloadText) {
@@ -166,15 +119,6 @@ var xtoysBridgeTestSlot;
         adapter.log({ type: 'input_error', code: result.code, detail: result.detail });
         return 0;
       }
-      if (result.preview === undefined) {
-        if (result.changed === undefined && result.dispatchFailures !== undefined) {
-          stopRetryPending = result.dispatchFailures.length > 0;
-          stopped = !stopRetryPending;
-        } else if (result.changed === true || result.changedSlots > 0) {
-          stopped = false;
-          stopRetryPending = false;
-        }
-      }
       return 1;
     } catch (error) {
       reportError('runtime_error', error, adapter);
@@ -183,17 +127,11 @@ var xtoysBridgeTestSlot;
   };
 
   xtoysBridgeTick = function () {
-    var changed;
     if (runtime === null) {
       return 0;
     }
     try {
-      changed = runtime.tick();
-      if (stopRetryPending) {
-        stopRetryPending = hasRecentFailures(runtime);
-        stopped = !stopRetryPending;
-      }
-      return changed;
+      return runtime.tick();
     } catch (error) {
       reportError('runtime_error', error, adapter);
       return 0;
@@ -201,32 +139,24 @@ var xtoysBridgeTestSlot;
   };
 
   xtoysBridgeStopAll = function () {
-    var changed;
-    if (runtime === null || stopped) {
+    if (runtime === null) {
       return 0;
     }
     try {
-      changed = stopRetryPending ? runtime.tick() : runtime.stopAll();
-      stopRetryPending = hasRecentFailures(runtime);
-      stopped = !stopRetryPending;
-      return changed;
+      return runtime.stopAll();
     } catch (error) {
       reportError('runtime_error', error, adapter);
       return 0;
     }
   };
 
-  xtoysBridgeReloadConfig = function () {
-    return initialize();
-  };
-
-  xtoysBridgeTestSlot = function (slotId, value) {
+  xtoysBridgeTestSlot = function (slotId, value, direction) {
     var parsedSlot = finiteNumber(slotId);
     var parsedValue = finiteNumber(value);
     var numericSlot;
     var numericValue;
     var selected;
-    var generation;
+    var parsedDirection;
     if (runtime === null || !parsedSlot.ok || !parsedValue.ok) {
       return 0;
     }
@@ -239,22 +169,21 @@ var xtoysBridgeTestSlot;
     if (!selected.enabled || selected.id !== numericSlot) {
       return 0;
     }
-    generation = runtime.reserveSlotGeneration(numericSlot);
+    parsedDirection = manualDirection(selected, numericValue, direction);
+    if (!parsedDirection.ok) {
+      return 0;
+    }
+    runtime.invalidateSlot(numericSlot);
     try {
       adapter.applySlot({
         id: numericSlot,
         value: ns.clamp(numericValue, 0, 100),
         frequency: 0,
-        direction: null,
-        generation: generation
+        direction: parsedDirection.value
       }, { rampSeconds: 0 });
-      stopped = false;
-      stopRetryPending = false;
       return 1;
     } catch (error) {
-      stopped = false;
-      stopRetryPending = false;
-      reportError('adapter_apply_error', error, adapter);
+      reportError('xtoys_call_error', error, adapter, numericSlot);
       return 0;
     }
   };
